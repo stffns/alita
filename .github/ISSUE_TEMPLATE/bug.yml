@@ -1,0 +1,39 @@
+name: Bug
+description: Something is broken or behaving unexpectedly
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happens? Keep it to the observable symptom.
+      placeholder: "When I do X, Y happens instead of Z."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal sequence that triggers the bug.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      placeholder: "Expected: ... -- Actual: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS version, Python version, chat model in use, any other relevant context.
+      placeholder: "macOS 26.3, Python 3.12, deepseek-v4-flash"
+    validations:
+      required: false

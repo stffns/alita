@@ -45,16 +45,20 @@ def main() -> None:
     job_consolidate()
     after_consolidate = docs_count()
     print(f"  done in {time.time() - t0:.1f}s")
-    print(f"  docs in vstash: {after_ingest} -> {after_consolidate} "
-          f"(+{after_consolidate - after_ingest})")
+    print(
+        f"  docs in vstash: {after_ingest} -> {after_consolidate} "
+        f"(+{after_consolidate - after_ingest})"
+    )
 
     banner("job_briefing")
     t0 = time.time()
     job_briefing()
     after_briefing = docs_count()
     print(f"  done in {time.time() - t0:.1f}s")
-    print(f"  docs in vstash: {after_consolidate} -> {after_briefing} "
-          f"(+{after_briefing - after_consolidate})")
+    print(
+        f"  docs in vstash: {after_consolidate} -> {after_briefing} "
+        f"(+{after_briefing - after_consolidate})"
+    )
 
     banner("Final state")
     print("All docs:")

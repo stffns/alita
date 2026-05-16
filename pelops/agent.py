@@ -12,7 +12,7 @@ from langchain.chat_models import init_chat_model
 
 from pelops.callbacks import MetricsCallback
 from pelops.config import Settings
-from pelops.middleware import LoggingSummarization
+from pelops.middleware import PROSE_SUMMARY_PROMPT, LoggingSummarization
 from pelops.persona import system_prompt
 from pelops.subagents import SUBAGENTS
 from pelops.tools import CHAT_TOOLS
@@ -105,11 +105,15 @@ def build_agent(restricted: bool = False):
         model=model,
         trigger=[("messages", 60), ("tokens", 12_000)],
         keep=("messages", 20),
+        summary_prompt=PROSE_SUMMARY_PROMPT,
     )
 
-    # Interactive mode: pause before persistent memory writes so the user
-    # can approve. Autonomous flows skip this (no human available).
-    interrupt_on = None if restricted else {"vstash_remember": True}
+    # NOTE: interrupt_on={"vstash_remember": True} is intentionally OFF.
+    # When enabled, the framework pauses agent execution before the tool
+    # call and returns whatever partial output it had -- the user sees a
+    # truncated response and the state hangs unresumed (we don't have an
+    # approval UI in Chainlit or Telegram yet). Restore this once those
+    # transports have a "resume" handler -- see HumanInTheLoop docs.
 
     return create_deep_agent(
         model=model,
@@ -120,7 +124,6 @@ def build_agent(restricted: bool = False):
         skills=skills,
         middleware=[summarizer],
         checkpointer=_build_checkpointer(),
-        interrupt_on=interrupt_on,
     )
 
 

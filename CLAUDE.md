@@ -4,7 +4,7 @@ Project-level instructions for Claude Code. Loaded into context every session, s
 
 ## What this is
 
-**ALITA** (Autonomous Listener, Investigator, Thinker, Aide) is a personal research-companion agent. The agent inside is named **Pelops** (after Pelops II from *Godzilla: Singular Point*). Single author, runs on a laptop. Not a product, not a library -- a system Jay actually uses.
+**ALITA** (Autonomous Listener, Investigator, Thinker, Aide) is a personal research-companion agent. The agent's identity is **Alita**. "Pelops" was the originating inspiration (Pelops II from *Godzilla: Singular Point*) and survives as the python package name (`pelops/`) and entry points -- a historical artifact, tracked for rename in issue #1. Single author, runs on a laptop. Not a product, not a library -- a system Jay actually uses.
 
 Stack pillars:
 - Agent harness: [deepagents](https://github.com/langchain-ai/deepagents) 0.6 (LangGraph underneath)
@@ -73,6 +73,31 @@ python -m pytest -q
 pelops-doctor
 ```
 
+## Branches and workflow (REQUIRED)
+
+**Never commit directly to `main`.** All work flows through feature branches with PRs.
+
+Branch naming:
+- `feature/<short-slug>` for new functionality (e.g., `feature/wiki-phase-2`)
+- `fix/<short-slug>` for bug fixes
+- `docs/<short-slug>` for documentation-only changes
+- `refactor/<short-slug>` for non-functional cleanup
+- `chore/<short-slug>` for tooling, deps, infra
+
+One PR per logical change. If a branch grows two unrelated changes, split it.
+
+Before opening the PR:
+1. `ruff check pelops tests` -- silent
+2. `ruff format --check pelops tests` -- silent
+3. `python -m pytest -q` -- green
+4. Pre-commit hooks pass (`pre-commit run --all-files`)
+
+PR body should reference the relevant issue (`Closes #N`) when one exists.
+
+Merge style: squash-merge by default so `main` history reads as one commit per logical change. Rebase-merge is acceptable for a clean chain of small commits.
+
+Tags on `main` follow SemVer when a release is cut. The `Unreleased` section in `CHANGELOG.md` collects pending changes between tags.
+
 A change is "done" when ruff is silent, pytest is green, and -- for behavior changes -- `pelops-doctor` still reports 8/8.
 
 ## Don't do this (lessons earned)
@@ -82,6 +107,20 @@ A change is "done" when ruff is silent, pytest is green, and -- for behavior cha
 - Don't put RSS feeds in `layer='user-fact'`. The `job_ingest` cron is supposed to use `layer='rss'`; if you wire a new ingest job, double check.
 - Don't add custom middleware that conflicts with deepagents' base stack without checking `agent.nodes` -- the documented base stack in deepagents 0.6 does NOT actually include `SummarizationMiddleware` (we add it ourselves).
 - Don't bypass the pydantic Settings -- direct `os.getenv` access leaks the validation we paid for.
+
+## Observability with LangSmith
+
+Tracing is opt-in via env vars. Set in `.env`:
+
+```
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGSMITH_PROJECT=alita
+```
+
+When set, every `agent.invoke()` and `astream_events()` call streams to LangSmith automatically (langchain reads these env vars at import time -- no code changes needed). Each turn shows the full graph traversal: model calls, tool calls, sub-agent invocations, token usage, latencies. Useful for understanding why a heartbeat decided `ping` vs `NOOP`, or why a chat turn took 28s.
+
+Leave `LANGSMITH_TRACING` unset to disable. CI does not run with tracing (no key in the runner).
 
 ## When Claude is unsure
 

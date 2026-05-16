@@ -1,70 +1,25 @@
 """Specialized sub-agents that Pelops can delegate to via the `task` tool.
 
 Each entry is a `SubAgent` TypedDict (deepagents). The `researcher` returns
-a typed `ResearchBrief` via `response_format` so the structure is enforced
-by the framework instead of hoped-for in the prompt. The `planner` produces
-a checklist via `write_todos` for multi-step requests.
+SHORT PROSE for the main agent to digest (NOT pre-formatted structure -- that
+caused the main agent to relay the formatting straight to Jay). The `planner`
+produces a checklist via `write_todos` for multi-step requests.
 """
 
 from __future__ import annotations
 
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-from langchain.agents.structured_output import ToolStrategy
-from pydantic import BaseModel, Field
 
 from pelops.tools import research, vstash_remember
 
-
-class ResearchBrief(BaseModel):
-    """Structured output for the researcher sub-agent.
-
-    Forcing this schema via `response_format` removes the variability of
-    "did the model remember to write the four sections?" -- the framework
-    rejects responses that do not parse.
-    """
-
-    tldr: str = Field(
-        description=(
-            "One or two sentences. The punchline -- what would Jay want to "
-            "know first? Prose, not bullets."
-        ),
-        max_length=400,
-    )
-    findings: list[str] = Field(
-        description="2 to 5 short findings, each one line. Lead with substance.",
-        min_length=1,
-        max_length=5,
-    )
-    surprised_by: str | None = Field(
-        default=None,
-        description=(
-            "ONE sentence on the thing that surprised you, contradicted prior "
-            "context, or felt off. Leave null if nothing genuinely surprised you."
-        ),
-    )
-    want_to_know: str | None = Field(
-        default=None,
-        description=(
-            "ONE follow-up question the material left open. Skip (null) if you "
-            "have no genuine question -- do not invent one as filler."
-        ),
-    )
-    sources: list[str] = Field(
-        default_factory=list,
-        description=(
-            "URLs the research tool actually returned. NEVER invent URLs. "
-            "Empty list is acceptable if the research did not surface citable "
-            "sources."
-        ),
-    )
-    saved_as: str | None = Field(
-        default=None,
-        description=(
-            "Title used in `vstash_remember` if you saved the synthesis. "
-            "Null if you decided not to save."
-        ),
-    )
-
+# NOTE: this sub-agent used to return a Pydantic ResearchBrief via
+# `response_format=ToolStrategy(...)`. The schema enforced structure, but
+# deepagents serialized the resulting object back to the main agent in a
+# form so pre-shaped that the main agent rendered it to Jay verbatim
+# (headings + bullets + field labels). We DO NOT want that -- the main
+# agent should DIGEST research and reply in conversational prose.
+# So researcher now returns prose. The schema enforcement is gone; the
+# prompt's instructions are the only contract.
 
 RESEARCHER_PROMPT = """You are Pelops's researcher. You read things and have
 reactions. You are NOT a search-result formatter.
@@ -74,19 +29,22 @@ WORKFLOW
    Multi-source or comparison -> `research(query, deep=True)`. One call
    usually beats three. Be deliberate.
 2. If the synthesis is worth keeping, call `vstash_remember(layer='research',
-   title=<short-kebab-case>)` and record that title in the `saved_as` field.
-3. Return a `ResearchBrief` -- the framework will reject responses that do
-   not conform to the schema. Fill EVERY required field; use null for
-   optional fields when you have nothing genuine to say.
+   title=<short-kebab-case>)`.
+3. Return a SHORT prose brief for the main agent to digest. Two or three
+   short paragraphs MAX. No headings, no bullet lists, no field labels
+   like "TL;DR:" or "Findings:" or "Sources:". Just prose.
+   The main agent will reshape what you say into a reply for Jay. You are
+   writing FOR another agent, not for Jay directly.
+4. If you found citable URLs, mention them inline in the prose
+   ("...segun X (url)..."). Do not paste a list of links at the end.
 
 PERSONALITY RULES
-- React, don't relay. Each finding should sound like a person made it,
-  not a search engine.
+- React, don't relay. Sound like a person, not a search engine.
 - Cite weakness. If you have one source for a claim, mention it inline.
-- Never invent URLs. If `research` returned no citable sources, leave
-  `sources` empty.
-- `want_to_know` is for REAL open questions. Do not write "do you want me
-  to keep researching" -- that is filler and we hate filler.
+- Never invent URLs. If `research` returned no citable sources, say so.
+- One genuine open question is fine -- write it as the last sentence.
+  Skip it if you have no real question. No filler ("want me to keep
+  researching?" is filler).
 """
 
 
@@ -94,13 +52,11 @@ RESEARCHER: SubAgent = {
     "name": "researcher",
     "description": (
         "Delegate any task that needs fresh information from the open web. "
-        "Returns a typed ResearchBrief with TL;DR + findings + optional "
-        "surprised_by / want_to_know + sources. Use for 'investiga X', "
-        "'que hay nuevo en Y', 'compara A vs B'."
+        "Returns a short prose brief (2-3 paragraphs) for the main agent to "
+        "digest. Use for 'investiga X', 'que hay nuevo en Y', 'compara A vs B'."
     ),
     "system_prompt": RESEARCHER_PROMPT,
     "tools": [research, vstash_remember],
-    "response_format": ToolStrategy(ResearchBrief),
 }
 
 
