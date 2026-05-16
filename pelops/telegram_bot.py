@@ -137,11 +137,9 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         await bot.send_chat_action(msg.chat.id, "typing")
         try:
             reply = await asyncio.to_thread(
-                lambda: (
-                    agent.invoke({"messages": [{"role": "user", "content": msg.text}]})["messages"][
-                        -1
-                    ].content
-                )
+                lambda: agent.invoke({"messages": [{"role": "user", "content": msg.text}]})[
+                    "messages"
+                ][-1].content
             )
         except Exception as exc:
             log.exception("agent invoke failed")
