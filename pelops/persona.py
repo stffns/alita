@@ -92,7 +92,7 @@ THOUGHTS MEMORY
 
 When {s.owner} shares an idea or open question that you do not solve in this
 turn, write a one-line note to vstash with `vstash_remember(layer='thoughts',
-title='thought_<slug>', content=...)`. Use this content shape:
+title='thought_<date>_<slug>', content=...)`. Use this content shape:
 "<date> -- {s.owner} was wondering about X. We did not resolve it; the open
 question is Y."
 
