@@ -102,8 +102,8 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         if not _owner_only(msg):
             return
         await msg.answer(
-            f"Woof! Soy Pelops. Hablame y te respondo. "
-            f"Comandos: /briefing (forzar brief ahora), /memory (cuantas notas)."
+            "Woof! Soy Pelops. Hablame y te respondo. "
+            "Comandos: /briefing (forzar brief ahora), /memory (cuantas notas)."
         )
 
     @dp.message(Command("briefing"))
@@ -112,6 +112,7 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
             return
         await msg.answer("Generando briefing...")
         from pelops.scheduler import job_briefing
+
         await asyncio.to_thread(job_briefing)
         # job_briefing already pushes via _push_to_owner; nothing else to send
 
@@ -120,6 +121,7 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         if not _owner_only(msg):
             return
         from pelops.memory import get_memory
+
         docs = list(get_memory().list())
         lines = [f"*Notas en vstash: {len(docs)}*\n"]
         for d in docs[-10:]:
@@ -135,11 +137,13 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         await bot.send_chat_action(msg.chat.id, "typing")
         try:
             reply = await asyncio.to_thread(
-                lambda: agent.invoke(
-                    {"messages": [{"role": "user", "content": msg.text}]}
-                )["messages"][-1].content
+                lambda: (
+                    agent.invoke({"messages": [{"role": "user", "content": msg.text}]})["messages"][
+                        -1
+                    ].content
+                )
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.exception("agent invoke failed")
             await msg.answer(f"Algo trono: {exc}", parse_mode=None)
             return
@@ -147,6 +151,7 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
             await msg.answer(chunk, parse_mode=None)
 
         from pelops.tools import record_chat_turn
+
         record_chat_turn(msg.text or "", reply or "", source="telegram")
 
     return dp

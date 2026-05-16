@@ -7,7 +7,7 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import chainlit as cl
 from langchain_core.messages import AIMessage, HumanMessage
@@ -38,9 +38,7 @@ async def on_chat_start() -> None:
             )
             for r in recent
         ]
-        actions.append(
-            cl.Action(name="inbox_dismiss", payload={}, label="Dismiss")
-        )
+        actions.append(cl.Action(name="inbox_dismiss", payload={}, label="Dismiss"))
         await cl.Message(
             author="Inbox",
             content=(
@@ -62,10 +60,13 @@ async def on_chat_start() -> None:
 
     # Live push: spawn a background task that polls the followups table and
     # surfaces any newly-fired rows into THIS chat. Mirrors Telegram pushes.
-    session_start = datetime.now(timezone.utc).isoformat()
-    cl.user_session.set("live_seen", set(r["id"] for r in recent))
+    session_start = datetime.now(UTC).isoformat()
+    cl.user_session.set("live_seen", {r["id"] for r in recent})
     cl.user_session.set("live_after", session_start)
-    asyncio.create_task(_live_pusher())
+    # Keep a reference so the task is not garbage-collected mid-loop
+    # (per RUF006). The session is short-lived enough that we do not
+    # need to manage cancellation explicitly.
+    cl.user_session.set("live_pusher_task", asyncio.create_task(_live_pusher()))
 
 
 async def _live_pusher() -> None:
@@ -82,10 +83,7 @@ async def _live_pusher() -> None:
             seen: set = cl.user_session.get("live_seen") or set()
             after: str = cl.user_session.get("live_after") or ""
             recent = jobs.recent_completions(hours=2, limit=20)
-            new = [
-                r for r in recent
-                if r["id"] not in seen and (r.get("fired_at") or "") >= after
-            ]
+            new = [r for r in recent if r["id"] not in seen and (r.get("fired_at") or "") >= after]
             if not new:
                 continue
             # Push oldest-first so the chat reads chronologically.
@@ -103,7 +101,7 @@ async def _live_pusher() -> None:
             cl.user_session.set("live_seen", seen)
         except asyncio.CancelledError:
             return
-        except Exception:  # noqa: BLE001
+        except Exception:
             # Best-effort -- never let the polling loop die.
             await asyncio.sleep(5)
 
@@ -154,7 +152,7 @@ async def on_message(message: cl.Message) -> None:
     agent = cl.user_session.get("agent")
     history: list[dict] = cl.user_session.get("history", [])
 
-    messages = _to_lc(history) + [HumanMessage(content=message.content)]
+    messages = [*_to_lc(history), HumanMessage(content=message.content)]
 
     response = cl.Message(author="Pelops", content="")
     final_text = ""
@@ -187,4 +185,5 @@ async def on_message(message: cl.Message) -> None:
 
     # Continuous episodic memory -- save this exchange for future recall.
     from pelops.tools import record_chat_turn
+
     record_chat_turn(message.content, final_text, source="chainlit")

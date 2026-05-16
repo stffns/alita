@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepagents.middleware.subagents import SubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 
 from pelops.tools import research, vstash_remember
 
@@ -67,7 +67,5 @@ RESEARCHER: SubAgent = {
     "tools": [research, vstash_remember],
 }
 
-
-from deepagents.middleware.subagents import CompiledSubAgent
 
 SUBAGENTS: list[SubAgent | CompiledSubAgent] = [RESEARCHER]

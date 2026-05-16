@@ -8,7 +8,7 @@ Three groups:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import feedparser
 from groq import Groq
@@ -19,22 +19,29 @@ from pelops import jobs, watchers
 from pelops.config import Settings
 from pelops.memory import get_memory
 
-
 # Layer taxonomy. Every note in vstash MUST be tagged with exactly one of
 # these. The agent uses them to filter recall and avoid conflating sources.
-LAYER_USER = "user-fact"          # things Jay personally told Pelops about himself
-LAYER_RESEARCH = "research"       # syntheses produced by the researcher sub-agent
-LAYER_BRIEFING = "briefing"       # morning briefings the scheduler produced
+LAYER_USER = "user-fact"  # things Jay personally told Pelops about himself
+LAYER_RESEARCH = "research"  # syntheses produced by the researcher sub-agent
+LAYER_BRIEFING = "briefing"  # morning briefings the scheduler produced
 LAYER_CONSOLIDATED = "consolidated"  # semantic notes the nightly consolidator produced
-LAYER_RSS = "rss"                 # raw RSS ingest dumps (rarely worth recalling directly)
+LAYER_RSS = "rss"  # raw RSS ingest dumps (rarely worth recalling directly)
 LAYER_AGENT_ACTION = "agent-action"  # things Pelops has pushed to Jay (own history)
-LAYER_THOUGHTS = "thoughts"       # Pelops's own evolving curiosity, hypotheses, questions
-LAYER_EPISODIC = "episodic"       # raw chat turns (user msg + response) for continuous recall
-LAYER_SESSION_STATE = "session-state"  # rolling summary of recent activity for cross-session continuity
+LAYER_THOUGHTS = "thoughts"  # Pelops's own evolving curiosity, hypotheses, questions
+LAYER_EPISODIC = "episodic"  # raw chat turns (user msg + response) for continuous recall
+LAYER_SESSION_STATE = (
+    "session-state"  # rolling summary of recent activity for cross-session continuity
+)
 ALL_LAYERS = (
-    LAYER_USER, LAYER_RESEARCH, LAYER_BRIEFING,
-    LAYER_CONSOLIDATED, LAYER_RSS, LAYER_AGENT_ACTION,
-    LAYER_THOUGHTS, LAYER_EPISODIC, LAYER_SESSION_STATE,
+    LAYER_USER,
+    LAYER_RESEARCH,
+    LAYER_BRIEFING,
+    LAYER_CONSOLIDATED,
+    LAYER_RSS,
+    LAYER_AGENT_ACTION,
+    LAYER_THOUGHTS,
+    LAYER_EPISODIC,
+    LAYER_SESSION_STATE,
 )
 
 
@@ -48,6 +55,7 @@ def record_chat_turn(user_msg: str, response: str, source: str = "chat") -> None
     is the raw river of conversation.
     """
     import logging
+
     log = logging.getLogger("pelops.tools.record_chat_turn")
     if not user_msg or not response:
         return
@@ -55,11 +63,13 @@ def record_chat_turn(user_msg: str, response: str, source: str = "chat") -> None
     if len(user_msg.strip()) < 4 and len(response.strip()) < 20:
         return
     try:
+        from datetime import datetime
+
         from vstash.ingest import ingest_text
-        from datetime import datetime, timezone
+
         mem = get_memory()
         s = Settings.load()
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         title = f"chat_{source}_{ts.strftime('%Y%m%d_%H%M%S')}"
         body = (
             f"# Chat turn ({source})\n"
@@ -76,7 +86,7 @@ def record_chat_turn(user_msg: str, response: str, source: str = "chat") -> None
             layer=LAYER_EPISODIC,
             tags=f"episodic,{source}",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("record_chat_turn failed: %s", exc)
 
 
@@ -91,16 +101,16 @@ def record_agent_action(label: str, content: str) -> None:
     a memory miss must never block a push.
     """
     import logging
+
     log = logging.getLogger("pelops.tools.record_agent_action")
     try:
+        from datetime import datetime
+
         from vstash.ingest import ingest_text
-        from datetime import datetime, timezone
+
         mem = get_memory()
         s = Settings.load()
-        title = (
-            f"action_{label}_"
-            f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}"
-        )
+        title = f"action_{label}_{datetime.now(UTC).strftime('%Y%m%d_%H%M')}"
         ingest_text(
             text=content,
             title=title,
@@ -110,7 +120,7 @@ def record_agent_action(label: str, content: str) -> None:
             layer=LAYER_AGENT_ACTION,
             tags=f"action,{label}",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("record_agent_action failed: %s", exc)
 
 
@@ -198,10 +208,7 @@ def vstash_remember(
             primary filter; tags are for free-form annotation.
     """
     if layer not in ALL_LAYERS:
-        return (
-            f"Error: layer={layer!r} is not one of {ALL_LAYERS}. "
-            f"Pick exactly one and re-call."
-        )
+        return f"Error: layer={layer!r} is not one of {ALL_LAYERS}. Pick exactly one and re-call."
     mem = get_memory()
     s = Settings.load()
     result = ingest_text(
@@ -327,8 +334,7 @@ def followup(
         if not pending:
             return "(no scheduled follow-ups)"
         return "\n".join(
-            f"- {j['id']}  next={j['run_at_utc']}  cron={j['cron'] or '-'}"
-            for j in pending
+            f"- {j['id']}  next={j['run_at_utc']}  cron={j['cron'] or '-'}" for j in pending
         )
     if action == "cancel":
         if not job_id:
@@ -411,6 +417,7 @@ def metrics_summary(hours: int = 24) -> str:
     short plain-text summary covering the last `hours` (default 24).
     """
     from pelops import metrics
+
     return metrics.format_summary(metrics.summary(hours=hours))
 
 

@@ -30,7 +30,7 @@ import logging
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pelops.config import Settings
@@ -40,10 +40,10 @@ log = logging.getLogger("pelops.watchers")
 _WATCHER_PREFIX = "w_"
 
 # Adaptive-cadence tuning.
-NOOPS_BEFORE_BACKOFF = 5         # consecutive NOOPs needed to double interval
-MAX_INTERVAL_SECONDS = 86_400    # 1 day cap
+NOOPS_BEFORE_BACKOFF = 5  # consecutive NOOPs needed to double interval
+MAX_INTERVAL_SECONDS = 86_400  # 1 day cap
 BACKOFF_MULTIPLIER = 2
-SPEEDUP_DIVISOR = 2              # on alert after backoff, halve toward initial
+SPEEDUP_DIVISOR = 2  # on alert after backoff, halve toward initial
 
 
 def _db_path() -> Path:
@@ -97,7 +97,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _normalize(text: str) -> str:
@@ -125,10 +125,14 @@ _INTERVAL_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERVAL_TO_SECONDS = {
-    "second": 1, "seconds": 1,
-    "minute": 60, "minutes": 60,
-    "hour": 3600, "hours": 3600,
-    "day": 86400, "days": 86400,
+    "second": 1,
+    "seconds": 1,
+    "minute": 60,
+    "minutes": 60,
+    "hour": 3600,
+    "hours": 3600,
+    "day": 86400,
+    "days": 86400,
 }
 
 
@@ -174,8 +178,7 @@ def note_noop(watcher_id: str) -> dict:
     with _connect() as con:
         con.row_factory = sqlite3.Row
         row = con.execute(
-            "SELECT interval_seconds, consecutive_noops "
-            "FROM pelops_watchers WHERE id = ?",
+            "SELECT interval_seconds, consecutive_noops FROM pelops_watchers WHERE id = ?",
             (watcher_id,),
         ).fetchone()
         if not row:
@@ -190,14 +193,15 @@ def note_noop(watcher_id: str) -> dict:
             return {"changed": False, "noops": new_noops}
         new_interval = min(current_interval * BACKOFF_MULTIPLIER, MAX_INTERVAL_SECONDS)
         con.execute(
-            "UPDATE pelops_watchers "
-            "SET interval_seconds = ?, consecutive_noops = 0 "
-            "WHERE id = ?",
+            "UPDATE pelops_watchers SET interval_seconds = ?, consecutive_noops = 0 WHERE id = ?",
             (new_interval, watcher_id),
         )
         log.info(
             "watcher %s: %d NOOPs -> backing off %ds -> %ds",
-            watcher_id, new_noops, current_interval, new_interval,
+            watcher_id,
+            new_noops,
+            current_interval,
+            new_interval,
         )
         return {
             "changed": True,
@@ -231,14 +235,14 @@ def note_alert(watcher_id: str) -> dict:
             return {"changed": False}
         new_interval = max(current // SPEEDUP_DIVISOR, initial)
         con.execute(
-            "UPDATE pelops_watchers "
-            "SET interval_seconds = ?, consecutive_noops = 0 "
-            "WHERE id = ?",
+            "UPDATE pelops_watchers SET interval_seconds = ?, consecutive_noops = 0 WHERE id = ?",
             (new_interval, watcher_id),
         )
         log.info(
             "watcher %s: real change after quiet period -> tightening %ds -> %ds",
-            watcher_id, current, new_interval,
+            watcher_id,
+            current,
+            new_interval,
         )
         return {
             "changed": True,
@@ -284,7 +288,7 @@ def claim_due() -> list[dict]:
     only (the bot). If we ever scale to multiple pollers we'd add a similar
     UPDATE-and-read pattern as in jobs.claim_due.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with _connect() as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(

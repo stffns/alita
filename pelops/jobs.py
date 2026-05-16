@@ -27,7 +27,7 @@ import logging
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from apscheduler.triggers.cron import CronTrigger
@@ -47,11 +47,16 @@ _PAIR_RE = re.compile(
     re.IGNORECASE,
 )
 _UNIT_TO_KW = {
-    "second": "seconds", "seconds": "seconds",
-    "minute": "minutes", "minutes": "minutes",
-    "hour": "hours",     "hours": "hours",
-    "day": "days",       "days": "days",
-    "week": "weeks",     "weeks": "weeks",
+    "second": "seconds",
+    "seconds": "seconds",
+    "minute": "minutes",
+    "minutes": "minutes",
+    "hour": "hours",
+    "hours": "hours",
+    "day": "days",
+    "days": "days",
+    "week": "weeks",
+    "weeks": "weeks",
 }
 
 
@@ -103,7 +108,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _compute_run_at(when: str) -> tuple[str, str | None]:
@@ -127,21 +132,21 @@ def _compute_run_at(when: str) -> tuple[str, str | None]:
             for n, unit in pairs:
                 kw = _UNIT_TO_KW[unit.lower()]
                 delta_kwargs[kw] = delta_kwargs.get(kw, 0) + int(n)
-            run_at = datetime.now(timezone.utc) + timedelta(**delta_kwargs)
+            run_at = datetime.now(UTC) + timedelta(**delta_kwargs)
             return run_at.isoformat(), None
 
     if len(when.split()) == 5:
         trig = CronTrigger.from_crontab(when)
-        next_fire = trig.get_next_fire_time(None, datetime.now(timezone.utc))
+        next_fire = trig.get_next_fire_time(None, datetime.now(UTC))
         if next_fire is None:
             raise ValueError(f"Cron {when!r} produces no future fire time")
-        return next_fire.astimezone(timezone.utc).isoformat(), when
+        return next_fire.astimezone(UTC).isoformat(), when
 
     try:
         run_at = datetime.fromisoformat(when.replace(" ", "T"))
         if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=timezone.utc)
-        return run_at.astimezone(timezone.utc).isoformat(), None
+            run_at = run_at.replace(tzinfo=UTC)
+        return run_at.astimezone(UTC).isoformat(), None
     except ValueError as exc:
         raise ValueError(
             f"Cannot parse `when`={when!r}. Accepted forms: "
@@ -172,8 +177,7 @@ def add(
             "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
             (job_id, label, prompt, run_at, cron, _now_iso(), watcher_id),
         )
-    log.info("added followup %s run_at=%s cron=%s watcher_id=%s",
-             job_id, run_at, cron, watcher_id)
+    log.info("added followup %s run_at=%s cron=%s watcher_id=%s", job_id, run_at, cron, watcher_id)
     return job_id
 
 
@@ -208,7 +212,7 @@ def claim_due() -> list[dict]:
     NOT see these rows (the UPDATE filter on claimed_at IS NULL is the
     transactional gate).
     """
-    claimer = f"pid:{datetime.now(timezone.utc).timestamp()}"
+    claimer = f"pid:{datetime.now(UTC).timestamp()}"
     now = _now_iso()
     with _connect() as con:
         con.row_factory = sqlite3.Row
@@ -247,7 +251,7 @@ def recent_completions(hours: int = 24, limit: int = 10) -> list[dict]:
     a new session -- so they can see what Pelops pushed to Telegram while
     they were away.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
     with _connect() as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
@@ -288,7 +292,7 @@ def mark_failed(job_id: str, last_error: str) -> dict:
             log.warning("followup %s gave up after %d attempts", job_id, attempt)
             return {"retried": False, "attempt": attempt, "next_run_at": None}
         backoff_s = RETRY_BACKOFF_SECONDS[attempt - 1]
-        next_run = (datetime.now(timezone.utc) + timedelta(seconds=backoff_s)).isoformat()
+        next_run = (datetime.now(UTC) + timedelta(seconds=backoff_s)).isoformat()
         con.execute(
             "UPDATE pelops_followups "
             "SET status = 'pending', claimed_at = NULL, "
@@ -298,7 +302,10 @@ def mark_failed(job_id: str, last_error: str) -> dict:
         )
     log.info(
         "followup %s scheduled retry #%d in %ds (next_run=%s)",
-        job_id, attempt, backoff_s, next_run,
+        job_id,
+        attempt,
+        backoff_s,
+        next_run,
     )
     return {"retried": True, "attempt": attempt, "next_run_at": next_run}
 
@@ -306,7 +313,7 @@ def mark_failed(job_id: str, last_error: str) -> dict:
 def rearm_cron(job_id: str, cron: str) -> None:
     """For a cron-based followup: compute next run and set status back to pending."""
     trig = CronTrigger.from_crontab(cron)
-    nxt = trig.get_next_fire_time(None, datetime.now(timezone.utc))
+    nxt = trig.get_next_fire_time(None, datetime.now(UTC))
     if nxt is None:
         mark_done(job_id, last_error="cron exhausted")
         return
@@ -316,6 +323,6 @@ def rearm_cron(job_id: str, cron: str) -> None:
             "SET status = 'pending', claimed_at = NULL, "
             "    run_at_utc = ?, fired_at = ?, last_error = NULL "
             "WHERE id = ?",
-            (nxt.astimezone(timezone.utc).isoformat(), _now_iso(), job_id),
+            (nxt.astimezone(UTC).isoformat(), _now_iso(), job_id),
         )
     log.info("re-armed cron followup %s next=%s", job_id, nxt)

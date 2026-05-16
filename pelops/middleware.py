@@ -25,24 +25,25 @@ class LoggingSummarization(SummarizationMiddleware):
     `vstash_recall(query='context compression', layer='agent-action')`.
     """
 
-    def _create_summary(self, messages_to_summarize):  # noqa: ANN001
+    def _create_summary(self, messages_to_summarize):
         summary = super()._create_summary(messages_to_summarize)
         try:
             n = len(messages_to_summarize)
             preview = summary[:200] if isinstance(summary, str) else str(summary)[:200]
             log.warning(
-                "CONTEXT COMPRESSED: rolled %d old messages into a summary "
-                "(first 200 chars: %r)",
-                n, preview,
+                "CONTEXT COMPRESSED: rolled %d old messages into a summary (first 200 chars: %r)",
+                n,
+                preview,
             )
             # Save the compression event for future recall.
             from pelops.tools import record_agent_action
+
             record_agent_action(
                 "context-compression",
                 f"Context compression event: {n} old messages were rolled "
                 f"into the following summary because the model's context "
                 f"window was filling up.\n\n{summary}",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("compression logging failed: %s", exc)
         return summary

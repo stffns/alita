@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +99,7 @@ def _run_followup(prompt: str, label: str) -> None:
     log.info("followup firing: label=%s", label)
     try:
         answer = ask(prompt)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.exception("followup agent invocation failed")
         push_to_owner(f"followup-error ({label})", f"Algo trono: {exc}")
         return
@@ -142,7 +142,7 @@ def _parse_when(when: str) -> tuple[str, dict[str, Any]]:
     if m:
         n = int(m.group("n"))
         kw = _UNIT_TO_KW[m.group("unit").lower()]
-        run_at = datetime.now(timezone.utc) + timedelta(**{kw: n})
+        run_at = datetime.now(UTC) + timedelta(**{kw: n})
         return "date", {"trigger": DateTrigger(run_date=run_at)}
 
     if len(when.split()) == 5:
@@ -187,7 +187,7 @@ def cancel_followup_job(job_id: str) -> bool:
         sched.remove_job(job_id, jobstore=PERSISTENT_STORE)
         log.info("removed followup job %s", job_id)
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("remove_job(%s) failed: %s", job_id, exc)
         return False
 

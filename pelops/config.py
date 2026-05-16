@@ -59,9 +59,7 @@ class Settings(BaseSettings):
     # CSV-style env values ("AI agents,LLM tooling") flow straight to the
     # field_validator below.
     owner: str = Field(default="friend", alias="PELOPS_OWNER")
-    topics: Annotated[list[str], NoDecode] = Field(
-        default_factory=list, alias="PELOPS_TOPICS"
-    )
+    topics: Annotated[list[str], NoDecode] = Field(default_factory=list, alias="PELOPS_TOPICS")
     rss_feeds: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="PELOPS_RSS_FEEDS"
     )
@@ -80,14 +78,14 @@ class Settings(BaseSettings):
 
     @field_validator("topics", "rss_feeds", mode="before")
     @classmethod
-    def _split_csv(cls, v):  # noqa: ANN001
+    def _split_csv(cls, v):
         if isinstance(v, str):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v or []
 
     @field_validator("telegram_owner_chat_id", mode="before")
     @classmethod
-    def _parse_chat_id(cls, v):  # noqa: ANN001
+    def _parse_chat_id(cls, v):
         """Tolerate common typos when copying the chat id from Telegram:
         leading '=' or '+', surrounding whitespace. Returns None on
         anything that does not look like an integer."""
@@ -113,7 +111,7 @@ class Settings(BaseSettings):
     # ---------- back-compat helper ---------- #
 
     @classmethod
-    def load(cls) -> "Settings":
+    def load(cls) -> Settings:
         """Legacy entry point used across the codebase.
 
         Equivalent to `get_settings()`. Kept so the call sites

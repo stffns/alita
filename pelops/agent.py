@@ -37,11 +37,11 @@ def _build_model(model_id: str):
     if model_id.startswith("openrouter:"):
         from langchain_openai import ChatOpenAI
         from pydantic import SecretStr
+
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "PELOPS_CHAT_MODEL uses openrouter: prefix but "
-                "OPENROUTER_API_KEY is not set."
+                "PELOPS_CHAT_MODEL uses openrouter: prefix but OPENROUTER_API_KEY is not set."
             )
         return ChatOpenAI(
             model=model_id.split(":", 1)[1],

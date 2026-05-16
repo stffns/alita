@@ -9,7 +9,7 @@ Three jobs:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from apscheduler.triggers.cron import CronTrigger
 
@@ -101,7 +101,7 @@ def _push_to_owner(label: str, body: str) -> None:
     try:
         push_to_owner(label, body)
         record_agent_action(label, body)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("telegram push failed (%s): %s", label, exc)
 
 
@@ -174,14 +174,13 @@ def job_poll_followups() -> None:
                     adjust_msg = f"{verb} {new_h} (antes {old_h})."
                     push_to_owner(f"watcher-adjust ({label})", adjust_msg)
                     record_agent_action(f"watcher_adjust_{label}", adjust_msg)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.exception("followup execution failed: %s", job_id)
             result = jobs.mark_failed(job_id, last_error=str(exc))
             if not result["retried"]:
                 push_to_owner(
                     f"followup-failed ({label})",
-                    f"Job {job_id} gave up after {result['attempt']} attempts.\n"
-                    f"Last error: {exc}",
+                    f"Job {job_id} gave up after {result['attempt']} attempts.\nLast error: {exc}",
                 )
             continue
         if cron:
@@ -201,11 +200,12 @@ def job_session_snapshot() -> None:
     last 30 min. Otherwise no-op. Saves to layer='session-state' so future
     sessions can pick up the thread.
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
+
     from pelops.memory import get_memory
 
     mem = get_memory()
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    datetime.now(UTC) - timedelta(minutes=30)
     recent = mem.search(
         "chat turn",
         top_k=10,
@@ -286,8 +286,10 @@ def register_cron_jobs(sched) -> None:
     # roll the episodic turns into a single state note Pelops reads at session
     # start. Makes the agent feel continuous across sessions.
     sched.add_job(
-        job_session_snapshot, _cron("*/30 * * * *"),
-        id="session_snapshot", replace_existing=True,
+        job_session_snapshot,
+        _cron("*/30 * * * *"),
+        id="session_snapshot",
+        replace_existing=True,
     )
 
 
@@ -335,7 +337,7 @@ def job_poll_watchers() -> None:
         wid = w["id"]
         try:
             current = research.invoke({"query": w["query"], "deep": False})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("watcher %s research failed: %s", wid, exc)
             continue
 
@@ -391,7 +393,8 @@ def job_poll_watchers() -> None:
         watchers.update_state(wid, current, alerted=True)
         log.info(
             "watcher %s: %s -> alert scheduled",
-            wid, "first observation" if is_first else "change detected",
+            wid,
+            "first observation" if is_first else "change detected",
         )
 
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pelops.config import Settings
@@ -24,23 +24,23 @@ log = logging.getLogger("pelops.metrics")
 # Tool fees (web search etc) are NOT included -- only token costs.
 PRICING_PER_M = {
     # Groq
-    "qwen/qwen3-32b":        {"in": 0.29, "out": 0.59},
-    "qwen-3-32b":            {"in": 0.29, "out": 0.59},
-    "llama-3.1-8b-instant":  {"in": 0.05, "out": 0.08},
-    "gpt-oss-20b":           {"in": 0.10, "out": 0.50},
-    "gpt-oss-120b":          {"in": 0.15, "out": 0.75},
+    "qwen/qwen3-32b": {"in": 0.29, "out": 0.59},
+    "qwen-3-32b": {"in": 0.29, "out": 0.59},
+    "llama-3.1-8b-instant": {"in": 0.05, "out": 0.08},
+    "gpt-oss-20b": {"in": 0.10, "out": 0.50},
+    "gpt-oss-120b": {"in": 0.15, "out": 0.75},
     "llama-3.3-70b-versatile": {"in": 0.59, "out": 0.79},
-    "llama-3.3-70b":         {"in": 0.59, "out": 0.79},
-    "groq/compound":         {"in": 0.15, "out": 0.75},
-    "groq/compound-mini":    {"in": 0.15, "out": 0.75},
+    "llama-3.3-70b": {"in": 0.59, "out": 0.79},
+    "groq/compound": {"in": 0.15, "out": 0.75},
+    "groq/compound-mini": {"in": 0.15, "out": 0.75},
     # OpenRouter
     "anthropic/claude-sonnet-4.6": {"in": 3.00, "out": 15.00},
-    "anthropic/claude-opus-4.7":   {"in": 5.00, "out": 25.00},
-    "openai/gpt-5.4":              {"in": 2.50, "out": 15.00},
+    "anthropic/claude-opus-4.7": {"in": 5.00, "out": 25.00},
+    "openai/gpt-5.4": {"in": 2.50, "out": 15.00},
     "google/gemini-3.1-pro-preview": {"in": 2.00, "out": 12.00},
-    "deepseek/deepseek-v4-flash":  {"in": 0.11, "out": 0.22},
-    "deepseek/deepseek-v4-pro":    {"in": 0.43, "out": 0.87},
-    "deepseek/deepseek-v3.2":      {"in": 0.25, "out": 0.38},
+    "deepseek/deepseek-v4-flash": {"in": 0.11, "out": 0.22},
+    "deepseek/deepseek-v4-pro": {"in": 0.43, "out": 0.87},
+    "deepseek/deepseek-v3.2": {"in": 0.25, "out": 0.38},
 }
 
 
@@ -68,9 +68,7 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_turns_ts ON pelops_turns(timestamp)"
-    )
+    con.execute("CREATE INDEX IF NOT EXISTS idx_turns_ts ON pelops_turns(timestamp)")
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS pelops_tool_calls (
@@ -83,14 +81,12 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tools_ts ON pelops_tool_calls(timestamp, name)"
-    )
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tools_ts ON pelops_tool_calls(timestamp, name)")
     return con
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def record_turn(
@@ -106,10 +102,16 @@ def record_turn(
                 "INSERT INTO pelops_turns "
                 "(timestamp, model, prompt_tokens, completion_tokens, duration_ms, source) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (_now_iso(), model or "?", prompt_tokens or 0,
-                 completion_tokens or 0, duration_ms, source),
+                (
+                    _now_iso(),
+                    model or "?",
+                    prompt_tokens or 0,
+                    completion_tokens or 0,
+                    duration_ms,
+                    source,
+                ),
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("record_turn failed: %s", exc)
 
 
@@ -121,7 +123,7 @@ def record_tool(name: str, duration_ms: int, ok: bool, error: str | None = None)
                 "(timestamp, name, duration_ms, ok, error) VALUES (?, ?, ?, ?, ?)",
                 (_now_iso(), name, duration_ms, 1 if ok else 0, error),
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("record_tool failed: %s", exc)
 
 
@@ -137,6 +139,7 @@ def _cost(model: str | None, prompt_tokens: int, completion_tokens: int) -> floa
     p = PRICING_PER_M.get(base)
     if not p:
         import re
+
         stripped = re.sub(r"-(\d{8}|\d{4}-\d{2}-\d{2}|\d{4})$", "", base)
         p = PRICING_PER_M.get(stripped)
     if not p:
@@ -150,7 +153,7 @@ def _cost(model: str | None, prompt_tokens: int, completion_tokens: int) -> floa
 
 
 def summary(hours: int = 24) -> dict:
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
     out: dict = {"hours": hours}
     with _connect() as con:
         con.row_factory = sqlite3.Row
@@ -167,14 +170,16 @@ def summary(hours: int = 24) -> dict:
         by_model = []
         for r in turns:
             cost = _cost(r["model"], r["pin"] or 0, r["pout"] or 0)
-            by_model.append({
-                "model": r["model"],
-                "calls": r["n"],
-                "in_tokens": r["pin"] or 0,
-                "out_tokens": r["pout"] or 0,
-                "cost_usd": round(cost, 4),
-                "avg_ms": int(r["avg_ms"] or 0),
-            })
+            by_model.append(
+                {
+                    "model": r["model"],
+                    "calls": r["n"],
+                    "in_tokens": r["pin"] or 0,
+                    "out_tokens": r["pout"] or 0,
+                    "cost_usd": round(cost, 4),
+                    "avg_ms": int(r["avg_ms"] or 0),
+                }
+            )
             total_turns += r["n"]
             total_in += r["pin"] or 0
             total_out += r["pout"] or 0
@@ -226,7 +231,5 @@ def format_summary(s: dict) -> str:
     lines.append("By tool:")
     for t in s["by_tool"]:
         err = f" (errors={t['errors']})" if t["errors"] else ""
-        lines.append(
-            f"  {t['name']:20s} calls={t['calls']:4d} avg={t['avg_ms']}ms{err}"
-        )
+        lines.append(f"  {t['name']:20s} calls={t['calls']:4d} avg={t['avg_ms']}ms{err}")
     return "\n".join(lines)

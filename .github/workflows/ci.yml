@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint-test:
+    name: lint + test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: pip install --upgrade uv
+
+      - name: Install dev dependencies (skip vstash-local path source)
+        # The pyproject lists `vstash-local` via [tool.uv.sources] path which
+        # only exists on Jay's machine. Install everything else directly so
+        # CI doesn't need that path. Tests in tests/unit/ are designed to
+        # avoid importing modules that depend on vstash.
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install \
+            "deepagents>=0.6.1" \
+            "langchain>=0.3.0" \
+            "langchain-groq>=0.2.0" \
+            "langchain-openai>=1.0.0" \
+            "groq>=0.20.0" \
+            "apscheduler>=3.10.4" \
+            "aiogram>=3.13.0" \
+            "httpx>=0.27.0" \
+            "sqlalchemy>=2.0.0" \
+            "pydantic>=2.0.0" \
+            "pydantic-settings>=2.0" \
+            "feedparser>=6.0.11" \
+            "ruff>=0.6.0" \
+            "pytest>=8.0.0" \
+            "pytest-asyncio>=0.24.0" \
+            "pyright>=1.1.0"
+
+      - name: Ruff lint
+        run: |
+          source .venv/bin/activate
+          ruff check pelops tests
+
+      - name: Ruff format check
+        run: |
+          source .venv/bin/activate
+          ruff format --check pelops tests
+
+      - name: Pyright (basic)
+        # Use --skipunannotated to keep noise low on a young codebase.
+        # Failing here is advisory until we annotate everything.
+        continue-on-error: true
+        run: |
+          source .venv/bin/activate
+          pyright pelops tests || true
+
+      - name: Pytest
+        run: |
+          source .venv/bin/activate
+          pytest -v

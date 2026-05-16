@@ -45,16 +45,8 @@ class MetricsCallback(BaseCallbackHandler):
         if isinstance(llm_output, dict):
             model = llm_output.get("model_name") or llm_output.get("model")
             usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
-            prompt_tokens = (
-                usage.get("prompt_tokens")
-                or usage.get("input_tokens")
-                or 0
-            )
-            completion_tokens = (
-                usage.get("completion_tokens")
-                or usage.get("output_tokens")
-                or 0
-            )
+            prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+            completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
 
         # Path 2: message.usage_metadata (langchain >=0.3 standardized field).
         # Path 3: message.response_metadata.token_usage (OpenRouter via ChatOpenAI).
@@ -69,21 +61,13 @@ class MetricsCallback(BaseCallbackHandler):
                 if not (prompt_tokens or completion_tokens):
                     tu = rm.get("token_usage") or rm.get("usage") or {}
                     prompt_tokens = (
-                        tu.get("prompt_tokens")
-                        or tu.get("input_tokens")
-                        or prompt_tokens
+                        tu.get("prompt_tokens") or tu.get("input_tokens") or prompt_tokens
                     )
                     completion_tokens = (
-                        tu.get("completion_tokens")
-                        or tu.get("output_tokens")
-                        or completion_tokens
+                        tu.get("completion_tokens") or tu.get("output_tokens") or completion_tokens
                     )
-                model = (
-                    model
-                    or rm.get("model_name")
-                    or rm.get("model")
-                )
-            except Exception:  # noqa: BLE001
+                model = model or rm.get("model_name") or rm.get("model")
+            except Exception:
                 pass
 
         # Defensive: some providers double the model name when the field
