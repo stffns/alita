@@ -567,6 +567,17 @@ def wiki_search(query: str, limit: int = 10) -> str:
     return "\n".join(f"{slug}: {snippet}" for slug, snippet in matches)
 
 
+# Wiki tools -- live in CHAT_TOOLS. The agent reads its own behavior
+# from heartbeat.md via wiki_read, and may write to wiki pages (including
+# heartbeat.md itself, co-editor model). Git in the vault is the safety
+# net for self-edits.
+WIKI_TOOLS = [
+    wiki_read,
+    wiki_write,
+    wiki_list,
+    wiki_search,
+]
+
 CHAT_TOOLS = [
     now,
     vstash_recall,
@@ -576,14 +587,5 @@ CHAT_TOOLS = [
     followup,
     watcher,
     metrics_summary,
-]
-
-# Wiki tools live separately until the Phase 2 wiring. To enable them in
-# the agent, append `*WIKI_TOOLS` to `CHAT_TOOLS` -- but first ensure the
-# persona explains when to use them and the wiki vault has seed pages.
-WIKI_TOOLS = [
-    wiki_read,
-    wiki_write,
-    wiki_list,
-    wiki_search,
+    *WIKI_TOOLS,
 ]
