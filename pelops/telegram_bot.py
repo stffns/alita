@@ -14,16 +14,24 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import httpx
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from aiogram.types import Message
+# Load .env into os.environ BEFORE importing anything that depends on env
+# vars (langchain reads LANGSMITH_* directly from os.environ -- pydantic
+# Settings reads .env into the Settings instance but does NOT touch
+# os.environ, so without this langchain tracing silently no-ops).
+from dotenv import load_dotenv
 
-from pelops.agent import build_agent
-from pelops.autoschedule import init_scheduler
-from pelops.config import Settings
+load_dotenv()
+
+import httpx  # noqa: E402
+from aiogram import Bot, Dispatcher, F  # noqa: E402
+from aiogram.client.default import DefaultBotProperties  # noqa: E402
+from aiogram.enums import ParseMode  # noqa: E402
+from aiogram.filters import Command  # noqa: E402
+from aiogram.types import Message  # noqa: E402
+
+from pelops.agent import build_agent  # noqa: E402
+from pelops.autoschedule import init_scheduler  # noqa: E402
+from pelops.config import Settings  # noqa: E402
 
 log = logging.getLogger("pelops.telegram")
 

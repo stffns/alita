@@ -12,7 +12,7 @@ from langchain.chat_models import init_chat_model
 
 from pelops.callbacks import MetricsCallback
 from pelops.config import Settings
-from pelops.middleware import LoggingSummarization
+from pelops.middleware import PROSE_SUMMARY_PROMPT, LoggingSummarization
 from pelops.persona import system_prompt
 from pelops.subagents import SUBAGENTS
 from pelops.tools import CHAT_TOOLS
@@ -105,6 +105,7 @@ def build_agent(restricted: bool = False):
         model=model,
         trigger=[("messages", 60), ("tokens", 12_000)],
         keep=("messages", 20),
+        summary_prompt=PROSE_SUMMARY_PROMPT,
     )
 
     # NOTE: interrupt_on={"vstash_remember": True} is intentionally OFF.

@@ -6,15 +6,23 @@ Run with:
 
 from __future__ import annotations
 
-import asyncio
-from datetime import UTC, datetime
+# Load .env into os.environ BEFORE importing anything that depends on env
+# vars (langchain reads LANGSMITH_* directly from os.environ -- pydantic
+# Settings populates the Settings instance but does NOT touch os.environ,
+# so without this langchain tracing silently no-ops).
+from dotenv import load_dotenv
 
-import chainlit as cl
-from langchain_core.messages import AIMessage, HumanMessage
+load_dotenv()
 
-from pelops.agent import build_agent
-from pelops.callbacks import MetricsCallback
-from pelops.config import Settings
+import asyncio  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
+
+import chainlit as cl  # noqa: E402
+from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+
+from pelops.agent import build_agent  # noqa: E402
+from pelops.callbacks import MetricsCallback  # noqa: E402
+from pelops.config import Settings  # noqa: E402
 
 
 @cl.on_chat_start
