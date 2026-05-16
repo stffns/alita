@@ -154,7 +154,13 @@ def now(tz: str = "UTC") -> str:
 
 
 @tool
-def vstash_recall(query: str, layer: str | None = None, top_k: int = 5) -> str:
+def vstash_recall(
+    query: str,
+    layer: str | None = None,
+    top_k: int = 5,
+    max_chars_per_result: int = 1500,
+    exclude_title_prefix: str | None = None,
+) -> str:
     """Search Pelops's long-term memory for relevant past notes.
 
     Use this BEFORE answering questions about anything Jay has discussed before,
@@ -172,16 +178,35 @@ def vstash_recall(query: str, layer: str | None = None, top_k: int = 5) -> str:
             exploratory queries; for "what do you know about Jay?" pass
             layer='user-fact').
         top_k: number of results.
+        max_chars_per_result: cap on chars returned per chunk. Default 1500
+            keeps recall outputs cheap and still informative. Before this
+            cap, individual chunks ran 9000+ chars and dominated heartbeat
+            cost (a single recall returned 2200+ tokens, multiplied by 4-6
+            recalls per beat).
+        exclude_title_prefix: skip results whose title starts with this
+            prefix. Used by the heartbeat to filter
+            `action_context-compression_*` notes out of `agent-action`
+            recalls -- those are bulky and represent past compression
+            events, not genuine new activity.
     """
     results = get_memory().search(query, top_k=top_k, layer=layer)
     if not results:
         return "(no relevant memories found)"
     lines = []
     for i, r in enumerate(results, 1):
+        title = getattr(r, "title", "") or ""
+        if exclude_title_prefix and title.startswith(exclude_title_prefix):
+            continue
         score = getattr(r, "score", None)
         text = getattr(r, "text", None) or getattr(r, "content", "") or str(r)
+        if max_chars_per_result and len(text) > max_chars_per_result:
+            text = (
+                text[:max_chars_per_result] + f"\n... [truncated, full chunk was {len(text)} chars]"
+            )
         source = getattr(r, "source", "") or getattr(r, "path", "")
         lines.append(f"[{i}] score={score:.3f} source={source}\n{text}\n")
+    if not lines:
+        return "(no relevant memories after filter)"
     return "\n".join(lines)
 
 
