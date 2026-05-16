@@ -16,6 +16,7 @@ infrastructure (RSS ingestion, nightly consolidation, morning briefing).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 
 from apscheduler.triggers.cron import CronTrigger
@@ -296,35 +297,98 @@ def _latest_per_layer(
     return latest
 
 
+_DEFAULT_CHECK_FALLBACK = (
+    "Pick ONE topic from PELOPS_TOPICS that you have NOT covered in "
+    "layer='research' in the last 7 days. Run "
+    "research(query=<topic>, deep=False). Save the synthesis with "
+    "vstash_remember(layer='research', title=<slug>). Return DONE with "
+    "the slug. No Telegram push."
+)
+
+
+def _load_heartbeat_checks() -> list[str]:
+    """Parse the `## Checks (rotated)` section out of `heartbeat.md`.
+
+    The behavior of each beat lives in the wiki, NOT in this file. Alita
+    and Jay co-edit `heartbeat.md`; the runner reads it every beat. If
+    the file is missing or unparseable, we fall back to a single default
+    check (curiosity research) so the heartbeat never sits idle.
+    """
+    try:
+        from pelops import wiki
+
+        page = wiki.read("heartbeat")
+    except Exception as exc:
+        log.warning("heartbeat: wiki.read('heartbeat') failed: %s", exc)
+        return [_DEFAULT_CHECK_FALLBACK]
+    if page is None:
+        log.warning("heartbeat: heartbeat.md not found in vault, using fallback check")
+        return [_DEFAULT_CHECK_FALLBACK]
+
+    # Find the section `## Checks (rotated)` and parse numbered items
+    # until the next `## ` header. Each numbered item is one check.
+    section_re = re.search(
+        r"^##\s*Checks\b[^\n]*\n(.*?)(?=^##\s|\Z)",
+        page.body,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not section_re:
+        log.warning("heartbeat: '## Checks' section not found in heartbeat.md, using fallback")
+        return [_DEFAULT_CHECK_FALLBACK]
+    body = section_re.group(1)
+    # Numbered items: `1.`, `2.`, etc. Capture from the number through to
+    # the next number-at-line-start (or end of section).
+    items = re.findall(
+        r"^\s*\d+\.\s+(.+?)(?=^\s*\d+\.\s|\Z)",
+        body,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    items = [it.strip() for it in items if it.strip()]
+    if not items:
+        log.warning("heartbeat: no numbered checks parsed from heartbeat.md, using fallback")
+        return [_DEFAULT_CHECK_FALLBACK]
+    return items
+
+
+def _rotation_index(num_checks: int) -> int:
+    """Deterministic round-robin index across beats without storing state.
+
+    The 15-min beat number since unix epoch is monotonic and stateless.
+    `beat_number % num_checks` rotates evenly. Skipping a beat (Python
+    guard hits) does NOT advance the index, but the rotation still
+    covers every check over time because subsequent beats fall on
+    different mod values.
+    """
+    if num_checks <= 0:
+        return 0
+    beat = int(datetime.now(UTC).timestamp() // (15 * 60))
+    return beat % num_checks
+
+
 def job_heartbeat() -> None:
-    """Adaptive proactive beat. Replaces the old fixed `job_pulse`.
+    """Behavior-file-driven proactive beat.
 
     Runs every 15 min. Two cheap Python guards skip the LLM call when
-    obviously not needed; otherwise the agent picks ONE action from
-    {NOOP, ping, surface_thought, mini_consolidate} and we execute it.
+    obviously not needed (recent chat / push cooldown). Beats that
+    survive read `heartbeat.md` from the wiki vault, pick one check by
+    rotation, and let the agent execute it.
 
-    Guard 1 -- "Jay is here right now": if there is an episodic chat note
-    timestamped within the last 10 min, the user is actively chatting and
-    a proactive push would be noise. NOOP without burning tokens.
+    The agent can ALSO edit `heartbeat.md` via `wiki_write('heartbeat',
+    ...)` to refine its own checks. Co-editor model; git in the vault
+    is the safety net.
 
-    Guard 2 -- "we already pinged recently": if the heartbeat already
-    pushed something within the last 2 h, NOOP. Anti-spam.
-
-    Beats that survive both guards invoke the agent in `restricted=True`
-    mode (no `followup` tool) and parse the structured response.
-
-    The prompt deliberately tells the agent "silence forever is failure".
-    Earlier versions said "bias HEAVILY toward NOOP" which led to streaks
-    of 5+ NOOPs and Alita felt passive. We now inject concrete activity
-    signals (time since last action, fresh vstash ingestions) so the
-    agent has real data to decide on instead of guessing.
+    Output protocol from the agent:
+      Line 1 = exactly one of:
+        HEARTBEAT_OK            silent disposition, runner discards
+        PING                    Telegram message follows on lines 2+
+        DONE: <one-line desc>   action taken, no Telegram push
+      A malformed response is treated as HEARTBEAT_OK with a WARN log.
     """
     from datetime import timedelta
 
     now = datetime.now(UTC)
 
-    # One full scan across all the layers we care about. Replaces six
-    # separate `_latest_added_at` calls that each walked vstash.
+    # One full scan across the layers used by guards and prompt signals.
     latest = _latest_per_layer(
         {
             "episodic": None,
@@ -339,18 +403,19 @@ def job_heartbeat() -> None:
     last_chat = latest["episodic"]
     if last_chat is not None and (now - last_chat) < timedelta(minutes=10):
         secs = int((now - last_chat).total_seconds())
-        log.info("heartbeat: chat activity %ds ago, NOOP", secs)
+        log.info("heartbeat: chat activity %ds ago, HEARTBEAT_OK", secs)
         return
 
     last_push = latest["agent-action"]
     if last_push is not None and (now - last_push) < timedelta(hours=2):
         mins = int((now - last_push).total_seconds() / 60)
-        log.info("heartbeat: pushed %dmin ago, NOOP", mins)
+        log.info("heartbeat: pushed %dmin ago, HEARTBEAT_OK", mins)
         return
 
-    # Real signals to inject into the prompt. Replaces hallucination
-    # space ("Last heartbeat was 8 hours ago (morning pulse)" -- there
-    # was never a morning pulse) with measured facts.
+    checks = _load_heartbeat_checks()
+    idx = _rotation_index(len(checks))
+    check_text = checks[idx]
+
     if last_push is None:
         quiet_msg = "You have not taken ANY heartbeat action yet."
     else:
@@ -369,65 +434,38 @@ def job_heartbeat() -> None:
     s = Settings.load()
     topics = ", ".join(s.topics) if s.topics else "your usual topics"
     prompt = (
-        f"You are doing a 15-minute heartbeat beat for {s.owner}. Nobody "
-        f"asked you anything -- you are deciding if anything is worth doing "
-        f"right now.\n\n"
-        f"OBSERVED CONTEXT (factual, do not invent more):\n"
+        f"You are running heartbeat CHECK #{idx + 1} of {len(checks)} from "
+        f"your behavior file `heartbeat.md`. Your behavior file is also a "
+        f"wiki page -- you may edit it via wiki_write('heartbeat', ...) at "
+        f"any time. Refine a check that produces false positives, remove "
+        f"one that consistently does nothing, add one when you notice a "
+        f"recurring pattern.\n\n"
+        f"CHECK TO RUN THIS BEAT:\n"
+        f"{check_text}\n\n"
+        f"OBSERVED CONTEXT (factual, do not invent):\n"
         f"  - {quiet_msg}\n"
         f"  - Vstash activity: {fresh_msg}.\n"
-        f"  - Topics of interest: {topics}.\n\n"
-        f"DECISION FRAMING:\n"
-        f"  - NOOP is fine when nothing genuinely new happened.\n"
-        f"  - BUT silence forever is failure. You are meant to be a "
-        f"proactive companion, not a chatbot that speaks only when spoken "
-        f"to. If there is fresh material in vstash and you have not yet "
-        f"surfaced it, that is a reason to act.\n"
-        f"  - If your last few beats were ALL NOOP and you see ANY fresh "
-        f"activity above, lean toward surface_thought or mini_consolidate "
-        f"rather than another NOOP. Those are low-noise options "
-        f"(mini_consolidate sends NOTHING to Telegram, it just compiles "
-        f"memory).\n\n"
-        f"AVAILABLE ACTIONS (pick exactly ONE):\n"
-        f"  NOOP                Nothing of substance to act on. Log the reason.\n"
-        f"  ping                Send a SHORT Telegram message about a fresh, "
-        f"genuine thing {s.owner} has not heard yet. High signal-to-noise.\n"
-        f"  surface_thought     Bring back an open thought from layer='thoughts' "
-        f"that has not been resolved. Gentle Telegram nudge.\n"
-        f"  mini_consolidate    Cluster 2-3 recent episodic / rss / research "
-        f"notes into one semantic note via "
-        f"vstash_remember(layer='consolidated', ...). No Telegram push.\n\n"
-        f"PROCESS (keep recall calls SMALL -- top_k=3, not more):\n"
-        f"  1. vstash_recall(query='heartbeat', layer='agent-action', "
-        f"top_k=3, exclude_title_prefix='action_context-compression_') "
-        f"to see your last few beats. Do NOT repeat yourself. The "
-        f"exclude_title_prefix arg filters out bulky compression notes "
-        f"that are not relevant signal.\n"
-        f"  2. vstash_recall(layer='thoughts', top_k=3) for open threads.\n"
-        f"  3. vstash_recall(layer='rss', top_k=3) for fresh feeds.\n"
-        f"  4. vstash_recall(layer='episodic', top_k=3) for recent chats.\n"
-        f"  5. Decide based on what you find, not on what you wish was there.\n\n"
-        f"RETURN FORMAT (machine-parsed, strict):\n"
-        f"  Line 1 MUST be exactly one of:\n"
-        f"    ACTION: NOOP\n"
-        f"    ACTION: ping\n"
-        f"    ACTION: surface_thought\n"
-        f"    ACTION: mini_consolidate\n"
-        f"  Followed by:\n"
-        f"    NOOP                line 2 = one-line reason for the log. Stop.\n"
-        f"    ping                line 2+ = plain-text Telegram message (2-4 "
-        f"lines, no markdown, no asterisks, no brackets).\n"
-        f"    surface_thought     line 2+ = plain-text Telegram message that "
-        f"references the thought.\n"
-        f"    mini_consolidate    line 2 = one-line summary of what got "
-        f"consolidated. You should have already called vstash_remember.\n"
+        f"  - Topics: {topics}.\n\n"
+        f"EXECUTION:\n"
+        f"  1. Run the check above. Use vstash_recall to look at the "
+        f"relevant layer(s).\n"
+        f"  2. If the check finds something worth acting on, execute the "
+        f"action specified in the check using the right tool(s).\n"
+        f"  3. If you want to refine this check or add a new one, call "
+        f"wiki_write('heartbeat', updated_body, sources=[...]) before "
+        f"returning your disposition.\n\n"
+        f"OUTPUT PROTOCOL (machine-parsed, strict):\n"
+        f"  Line 1 MUST be exactly ONE of:\n"
+        f"    HEARTBEAT_OK\n"
+        f"      Nothing matched the check. Silent disposition.\n"
+        f"    PING\n"
+        f"      Lines 2+: plain-text Telegram message (2-4 lines, "
+        f"conversational prose, NO markdown, NO bullets, NO headings).\n"
+        f"    DONE: <one-line description>\n"
+        f"      Action taken (research saved, wiki updated, etc). No "
+        f"Telegram push. The runner logs your description.\n"
     )
-    # Per-beat thread_id. Heartbeats DO NOT share state across beats -- each
-    # one is a fresh decision from a clean context. Reusing a single
-    # thread_id (the previous default `default-heartbeat`) caused every
-    # beat to inherit the prior beat's tool-call history via the
-    # checkpointer, which accumulated ~9k chars per recall on every
-    # subsequent beat. Decisions don't need that continuity; the agent
-    # gets continuity from vstash_recall calls explicitly.
+
     beat_thread = f"heartbeat-{now.strftime('%Y%m%d-%H%M')}"
     try:
         answer = ask(prompt, restricted=True, source="heartbeat", thread_id=beat_thread)
@@ -435,32 +473,34 @@ def job_heartbeat() -> None:
         log.exception("heartbeat: agent invoke failed")
         return
 
-    lines = (answer or "").strip().splitlines()
-    if not lines or not lines[0].upper().startswith("ACTION:"):
-        log.warning("heartbeat: malformed response, treating as NOOP: %r", (answer or "")[:200])
-        return
-    action = lines[0].split(":", 1)[1].strip().lower()
-    body = "\n".join(lines[1:]).strip()
+    text = (answer or "").strip()
+    first_line = text.splitlines()[0].strip() if text else ""
 
-    if action == "noop":
-        log.info("heartbeat: NOOP -- %s", body[:120])
+    if first_line.upper() == "HEARTBEAT_OK":
+        log.info("heartbeat: HEARTBEAT_OK (check #%d)", idx + 1)
         return
-    if action == "ping":
+
+    if first_line.upper() == "PING":
+        body = "\n".join(text.splitlines()[1:]).strip()
+        if not body:
+            log.warning("heartbeat: PING with empty body, dropping")
+            return
         push_to_owner("heartbeat", body)
         record_agent_action("heartbeat_ping", body)
-        log.info("heartbeat: ping pushed")
+        log.info("heartbeat: PING pushed (check #%d)", idx + 1)
         return
-    if action == "surface_thought":
-        push_to_owner("heartbeat (surface)", body)
-        record_agent_action("heartbeat_surface", body)
-        log.info("heartbeat: surfaced a thought")
+
+    if first_line.upper().startswith("DONE:"):
+        desc = first_line.split(":", 1)[1].strip() if ":" in first_line else ""
+        # The agent did the work via tools; we just record the disposition.
+        record_agent_action("heartbeat_done", f"check #{idx + 1}: {desc}")
+        log.info("heartbeat: DONE (check #%d) -- %s", idx + 1, desc[:120])
         return
-    if action == "mini_consolidate":
-        # No push -- the agent already wrote to vstash via vstash_remember.
-        record_agent_action("heartbeat_consolidate", body)
-        log.info("heartbeat: mini-consolidated -- %s", body[:120])
-        return
-    log.warning("heartbeat: unknown action %r, treating as NOOP", action)
+
+    log.warning(
+        "heartbeat: malformed response, treating as HEARTBEAT_OK: %r",
+        text[:200],
+    )
 
 
 def register_cron_jobs(sched) -> None:
