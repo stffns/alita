@@ -396,12 +396,15 @@ def job_heartbeat() -> None:
         f"  mini_consolidate    Cluster 2-3 recent episodic / rss / research "
         f"notes into one semantic note via "
         f"vstash_remember(layer='consolidated', ...). No Telegram push.\n\n"
-        f"PROCESS:\n"
-        f"  1. vstash_recall(query='heartbeat', layer='agent-action', top_k=5) "
-        f"     to see your last few beats. Do NOT repeat yourself.\n"
-        f"  2. vstash_recall(layer='thoughts', top_k=5) to scan open threads.\n"
-        f"  3. vstash_recall(layer='rss', top_k=5) to scan fresh feeds.\n"
-        f"  4. vstash_recall(layer='episodic', top_k=10) for recent chats.\n"
+        f"PROCESS (keep recall calls SMALL -- top_k=3, not more):\n"
+        f"  1. vstash_recall(query='heartbeat', layer='agent-action', "
+        f"top_k=3, exclude_title_prefix='action_context-compression_') "
+        f"to see your last few beats. Do NOT repeat yourself. The "
+        f"exclude_title_prefix arg filters out bulky compression notes "
+        f"that are not relevant signal.\n"
+        f"  2. vstash_recall(layer='thoughts', top_k=3) for open threads.\n"
+        f"  3. vstash_recall(layer='rss', top_k=3) for fresh feeds.\n"
+        f"  4. vstash_recall(layer='episodic', top_k=3) for recent chats.\n"
         f"  5. Decide based on what you find, not on what you wish was there.\n\n"
         f"RETURN FORMAT (machine-parsed, strict):\n"
         f"  Line 1 MUST be exactly one of:\n"
@@ -418,8 +421,16 @@ def job_heartbeat() -> None:
         f"    mini_consolidate    line 2 = one-line summary of what got "
         f"consolidated. You should have already called vstash_remember.\n"
     )
+    # Per-beat thread_id. Heartbeats DO NOT share state across beats -- each
+    # one is a fresh decision from a clean context. Reusing a single
+    # thread_id (the previous default `default-heartbeat`) caused every
+    # beat to inherit the prior beat's tool-call history via the
+    # checkpointer, which accumulated ~9k chars per recall on every
+    # subsequent beat. Decisions don't need that continuity; the agent
+    # gets continuity from vstash_recall calls explicitly.
+    beat_thread = f"heartbeat-{now.strftime('%Y%m%d-%H%M')}"
     try:
-        answer = ask(prompt, restricted=True, source="heartbeat")
+        answer = ask(prompt, restricted=True, source="heartbeat", thread_id=beat_thread)
     except Exception:
         log.exception("heartbeat: agent invoke failed")
         return

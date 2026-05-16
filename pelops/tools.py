@@ -154,7 +154,13 @@ def now(tz: str = "UTC") -> str:
 
 
 @tool
-def vstash_recall(query: str, layer: str | None = None, top_k: int = 5) -> str:
+def vstash_recall(
+    query: str,
+    layer: str | None = None,
+    top_k: int = 5,
+    max_chars_per_result: int = 2500,
+    exclude_title_prefix: str | None = None,
+) -> str:
     """Search Pelops's long-term memory for relevant past notes.
 
     Use this BEFORE answering questions about anything Jay has discussed before,
@@ -171,17 +177,45 @@ def vstash_recall(query: str, layer: str | None = None, top_k: int = 5) -> str:
             Omit to search across all layers (only do this for broad
             exploratory queries; for "what do you know about Jay?" pass
             layer='user-fact').
-        top_k: number of results.
+        top_k: number of results AFTER filtering (the search internally
+            fetches a wider candidate set so an `exclude_title_prefix`
+            doesn't reduce the returned count).
+        max_chars_per_result: cap on chars returned per chunk. Default 2500
+            balances cost against keeping enough context for the chat
+            agent to recognize a note. Before this cap, chunks ran 9000+
+            chars and dominated heartbeat token cost. Pass a higher value
+            (or None) for queries where the full note matters.
+        exclude_title_prefix: skip results whose title starts with this
+            prefix. Used by the heartbeat to filter
+            `action_context-compression_*` notes out of `agent-action`
+            recalls -- those are bulky and represent past compression
+            events, not genuine new activity.
     """
-    results = get_memory().search(query, top_k=top_k, layer=layer)
+    # Over-fetch when a filter is in play so we can still return `top_k`
+    # after dropping matches. Gemini caught this: the previous code
+    # would return < top_k whenever the filter ate hits.
+    fetch_k = top_k * 3 if exclude_title_prefix else top_k
+    results = get_memory().search(query, top_k=fetch_k, layer=layer)
     if not results:
         return "(no relevant memories found)"
     lines = []
-    for i, r in enumerate(results, 1):
+    for r in results:
+        if len(lines) >= top_k:
+            break
+        title = getattr(r, "title", "") or ""
+        if exclude_title_prefix and title.startswith(exclude_title_prefix):
+            continue
         score = getattr(r, "score", None)
         text = getattr(r, "text", None) or getattr(r, "content", "") or str(r)
+        if max_chars_per_result and len(text) > max_chars_per_result:
+            text = (
+                text[:max_chars_per_result] + f"\n... [truncated, full chunk was {len(text)} chars]"
+            )
         source = getattr(r, "source", "") or getattr(r, "path", "")
-        lines.append(f"[{i}] score={score:.3f} source={source}\n{text}\n")
+        idx = len(lines) + 1
+        lines.append(f"[{idx}] score={score:.3f} source={source}\n{text}\n")
+    if not lines:
+        return "(no relevant memories after filter)"
     return "\n".join(lines)
 
 
