@@ -1,0 +1,205 @@
+"""Wiki memory layer for Alita.
+
+A directory of markdown files with YAML frontmatter and `[[backlinks]]`.
+Mutable pages, slug-as-filename. Designed to be Obsidian-compatible.
+
+See `docs/wiki-plan.md` and the seed page `wiki.md` inside the vault for
+the broader architecture. This module is the data layer; tool wrappers
+live in `pelops/tools.py` (`wiki_read`, `wiki_write`, ...).
+
+Invariants:
+  * Slugs are lowercase kebab-case (regex: ^[a-z0-9][a-z0-9-]*$).
+  * Every page has YAML frontmatter (slug, created, updated, sources).
+  * Anti-orphan rule: creating a NEW page requires the body to link to
+    at least one EXISTING page via `[[slug]]`. Updates are exempt.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+
+import yaml
+
+from pelops.config import Settings
+
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+BACKLINK_RE = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]")
+
+
+class WikiError(ValueError):
+    """Raised when a wiki operation violates an invariant."""
+
+
+@dataclass(frozen=True)
+class Page:
+    slug: str
+    body: str
+    created: date
+    updated: date
+    sources: list[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        fm = {
+            "slug": self.slug,
+            "created": self.created.isoformat(),
+            "updated": self.updated.isoformat(),
+            "sources": list(self.sources),
+        }
+        return "---\n" + yaml.safe_dump(fm, sort_keys=False) + "---\n\n" + self.body.rstrip() + "\n"
+
+
+def _root() -> Path:
+    return Settings.load().wiki_dir
+
+
+def _validate_slug(slug: str) -> None:
+    if not SLUG_RE.match(slug):
+        raise WikiError(f"invalid slug: {slug!r} (must match {SLUG_RE.pattern})")
+
+
+def _path(slug: str) -> Path:
+    _validate_slug(slug)
+    return _root() / f"{slug}.md"
+
+
+def _parse_date(v: object) -> date:
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        try:
+            return date.fromisoformat(v)
+        except ValueError:
+            pass
+    return date.today()
+
+
+def _parse(text: str, slug: str) -> Page:
+    if not text.startswith("---\n"):
+        raise WikiError(f"page {slug!r} missing YAML frontmatter")
+    end = text.find("\n---", 4)
+    if end < 0:
+        raise WikiError(f"page {slug!r} has unterminated frontmatter")
+    fm = yaml.safe_load(text[4:end]) or {}
+    body = text[end + 4 :].lstrip("\n")
+    return Page(
+        slug=fm.get("slug") or slug,
+        body=body,
+        created=_parse_date(fm.get("created")),
+        updated=_parse_date(fm.get("updated")),
+        sources=list(fm.get("sources") or []),
+    )
+
+
+def list_pages() -> list[str]:
+    """Return all wiki slugs in alphabetical order. Empty if the vault
+    directory does not exist yet."""
+    root = _root()
+    if not root.exists():
+        return []
+    return sorted(p.stem for p in root.glob("*.md") if SLUG_RE.match(p.stem))
+
+
+def read(slug: str) -> Page | None:
+    """Return the page or None if it does not exist.
+
+    Raises `WikiError` only for malformed pages, not for missing ones --
+    a missing page is a normal "not found" signal for callers.
+    """
+    p = _path(slug)
+    if not p.exists():
+        return None
+    return _parse(p.read_text(encoding="utf-8"), slug)
+
+
+def write(slug: str, body: str, sources: list[str] | None = None) -> Page:
+    """Create or update a page. Returns the persisted Page.
+
+    Anti-orphan rule: when CREATING a new page, the body must reference
+    at least one existing page via `[[other-slug]]`. Updates to existing
+    pages skip this check (they may keep or change their backlinks freely).
+
+    The first existing-page directory is auto-created if missing. The
+    write is atomic via tmp file + rename.
+    """
+    p = _path(slug)
+    today = date.today()
+    is_new = not p.exists()
+
+    if is_new:
+        existing = set(list_pages())
+        # Bootstrap case: the FIRST page in an empty vault cannot link
+        # anywhere because nothing exists yet. A 1-node graph is
+        # trivially connected, so the anti-orphan rule starts applying
+        # from the second page onward.
+        if existing:
+            linked = set(BACKLINK_RE.findall(body))
+            if not (linked & existing):
+                raise WikiError(
+                    f"refusing to create orphan page {slug!r}: the body "
+                    f"must link to at least one existing page via "
+                    f"[[other-slug]]. Found backlinks: "
+                    f"{sorted(linked) or 'none'}. Existing pages: "
+                    f"{sorted(existing) or 'none'}. Adopt the new page "
+                    f"into the graph by referencing a parent."
+                )
+        created = today
+    else:
+        existing_page = _parse(p.read_text(encoding="utf-8"), slug)
+        created = existing_page.created
+
+    page = Page(
+        slug=slug,
+        body=body.strip() + "\n",
+        created=created,
+        updated=today,
+        sources=list(sources or []),
+    )
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".md.tmp")
+    tmp.write_text(page.render(), encoding="utf-8")
+    tmp.replace(p)
+    return page
+
+
+def search(query: str, limit: int = 10) -> list[tuple[str, str]]:
+    """Substring search across page bodies (case-insensitive).
+
+    Returns `[(slug, snippet), ...]` ordered by slug. Snippet is a
+    ~80-char window centered on the first match in each page.
+    """
+    q = query.lower().strip()
+    if not q:
+        return []
+    out: list[tuple[str, str]] = []
+    for slug in list_pages():
+        page = read(slug)
+        if page is None:
+            continue
+        idx = page.body.lower().find(q)
+        if idx < 0:
+            continue
+        start = max(0, idx - 30)
+        end = min(len(page.body), idx + len(query) + 50)
+        snippet = page.body[start:end].replace("\n", " ").strip()
+        out.append((slug, snippet))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def backlinks(slug: str) -> list[str]:
+    """Return slugs of pages that link to the given one. Self-links are
+    excluded."""
+    out: list[str] = []
+    for other in list_pages():
+        if other == slug:
+            continue
+        page = read(other)
+        if page is None:
+            continue
+        if slug in BACKLINK_RE.findall(page.body):
+            out.append(other)
+    return out

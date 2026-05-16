@@ -1,0 +1,26 @@
+name: Refactor
+description: Non-functional cleanup -- restructuring, renaming, removing dead code
+title: "[refactor] "
+labels: ["refactor"]
+body:
+  - type: textarea
+    id: current_state
+    attributes:
+      label: Current state
+      description: Briefly describe what the code looks like today and why it is suboptimal.
+    validations:
+      required: true
+  - type: textarea
+    id: desired_state
+    attributes:
+      label: Desired state
+      description: What should it look like after this refactor?
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risk and migration
+      description: What can break? Is this a one-shot rename or a multi-PR sequence?
+    validations:
+      required: false

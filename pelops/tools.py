@@ -421,6 +421,118 @@ def metrics_summary(hours: int = 24) -> str:
     return metrics.format_summary(metrics.summary(hours=hours))
 
 
+# ----- Wiki tools -----------------------------------------------------------
+#
+# These are EXPOSED but NOT yet registered in CHAT_TOOLS. Wiring into the
+# agent happens in Phase 2 of the wiki rollout (see docs/wiki-plan.md). For
+# now the tools exist so they can be unit-tested in isolation and adopted
+# deliberately once the heartbeat experiment validates.
+
+
+@tool
+def wiki_read(slug: str) -> str:
+    """Read a wiki page by its slug.
+
+    The wiki is Alita's compiled-knowledge layer -- mutable markdown pages
+    with `[[backlinks]]` answering "what do I know about X". Use this when
+    the user asks "que sabes de X" or "que entiendes sobre Y", as opposed
+    to `vstash_recall` which surfaces raw source material.
+
+    Args:
+        slug: Kebab-case page identifier (e.g., "deepagents", "heartbeat").
+
+    Returns:
+        The full markdown of the page including frontmatter, or a clear
+        "not found" message if no such page exists.
+    """
+    from pelops import wiki
+
+    try:
+        page = wiki.read(slug)
+    except wiki.WikiError as exc:
+        return f"Error: {exc}"
+    if page is None:
+        return f"No wiki page named {slug!r}. Use `wiki_list` to see what exists."
+    return page.render()
+
+
+@tool
+def wiki_write(slug: str, body: str, sources: list[str] | None = None) -> str:
+    """Create or update a wiki page.
+
+    The wiki is YOUR compiled understanding, not a copy of sources. Each
+    page is ONE canonical entry per concept. Updates are encouraged --
+    when new sources contradict or extend a page, EDIT the page; do NOT
+    add a parallel one.
+
+    Anti-orphan rule: when creating a NEW page, the body must reference
+    at least one EXISTING page via `[[other-slug]]`. This keeps the graph
+    connected. Updates to existing pages skip this check.
+
+    Args:
+        slug: Kebab-case page identifier. Lowercase letters, digits, hyphens.
+        body: Markdown body (no frontmatter -- the tool writes it for you).
+            Use `[[other-slug]]` to link to other pages.
+        sources: Optional list of vstash document titles or URLs that
+            informed this revision. Helps later audits trace claims back.
+
+    Returns:
+        Success message with the page slug, or an error explaining what
+        invariant was violated.
+    """
+    from pelops import wiki
+
+    try:
+        page = wiki.write(slug, body, sources=sources)
+    except wiki.WikiError as exc:
+        return f"Error: {exc}"
+    action = "updated" if page.created != page.updated else "created"
+    return f"Wiki page {slug!r} {action}."
+
+
+@tool
+def wiki_list() -> str:
+    """List all wiki page slugs.
+
+    Use this to discover what pages exist before deciding whether to
+    create a new one or extend an existing one. Cheap -- just a directory
+    listing.
+
+    Returns:
+        Newline-separated slugs in alphabetical order, or "(empty)" if no
+        pages exist yet.
+    """
+    from pelops import wiki
+
+    slugs = wiki.list_pages()
+    if not slugs:
+        return "(empty -- the wiki has no pages yet)"
+    return "\n".join(slugs)
+
+
+@tool
+def wiki_search(query: str, limit: int = 10) -> str:
+    """Substring search across wiki page bodies (case-insensitive).
+
+    Use this when you want to know "is there already a page that mentions
+    X" without listing every page. Cheap -- scans markdown files.
+
+    Args:
+        query: Phrase to look for in page bodies. Matched as a substring.
+        limit: Max number of matches to return. Default 10.
+
+    Returns:
+        Lines of `slug: <snippet>` for each match, or "(no matches)" when
+        nothing is found.
+    """
+    from pelops import wiki
+
+    matches = wiki.search(query, limit=limit)
+    if not matches:
+        return "(no matches)"
+    return "\n".join(f"{slug}: {snippet}" for slug, snippet in matches)
+
+
 CHAT_TOOLS = [
     now,
     vstash_recall,
@@ -430,4 +542,14 @@ CHAT_TOOLS = [
     followup,
     watcher,
     metrics_summary,
+]
+
+# Wiki tools live separately until the Phase 2 wiring. To enable them in
+# the agent, append `*WIKI_TOOLS` to `CHAT_TOOLS` -- but first ensure the
+# persona explains when to use them and the wiki vault has seed pages.
+WIKI_TOOLS = [
+    wiki_read,
+    wiki_write,
+    wiki_list,
+    wiki_search,
 ]

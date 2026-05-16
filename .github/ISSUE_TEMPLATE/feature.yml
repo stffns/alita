@@ -1,0 +1,36 @@
+name: Feature
+description: New functionality or capability
+title: "[feature] "
+labels: ["feature"]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why does this matter? What current pain or gap does it close?
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: How would you implement it? List trade-offs if you considered alternatives.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know it is done? Concrete, testable conditions.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: What is deliberately NOT part of this feature?
+    validations:
+      required: false

@@ -1,9 +1,16 @@
 """APScheduler-driven autonomous loop for Pelops.
 
-Three jobs:
-  ingest        scan configured RSS feeds, store fresh items
-  briefing      every morning, summarize new stuff since yesterday
-  consolidate   nightly distillation of episodic notes into semantic ones
+Cron jobs:
+  ingest             scan configured RSS feeds, store fresh items
+  briefing           every morning, summarize new stuff since yesterday
+  consolidate        nightly distillation of episodic notes into semantic ones
+  heartbeat          every 15 min, agent decides NOOP / ping / surface_thought
+                     / mini_consolidate. Replaces the old fixed `job_pulse`.
+  health             every 15 min, cheap "scheduler is alive" log (no LLM cost)
+  session_snapshot   every 30 min, rolling "where we left off" note
+
+The heartbeat is the adaptive piece -- the other crons are predictable
+infrastructure (RSS ingestion, nightly consolidation, morning briefing).
 """
 
 from __future__ import annotations
@@ -235,37 +242,138 @@ def job_session_snapshot() -> None:
     log.info("session-snapshot composed:\n%s", answer[:300])
 
 
-def job_pulse() -> None:
-    """Proactive morning ping. Pelops decides what to mention based on memory."""
+def _latest_added_at(layer: str, title_prefix: str | None = None) -> datetime | None:
+    """Newest `added_at` timestamp across docs in a given layer.
+
+    Returns a tz-aware datetime, or None if no matching doc exists.
+    Used by `job_heartbeat` for cheap Python-side activity checks before
+    spending tokens on an LLM call.
+    """
+    try:
+        docs = list(get_memory().list())
+    except Exception as exc:
+        log.warning("heartbeat: vstash list() failed: %s", exc)
+        return None
+    latest: datetime | None = None
+    for d in docs:
+        if getattr(d, "layer", None) != layer:
+            continue
+        if title_prefix and not (getattr(d, "title", "") or "").startswith(title_prefix):
+            continue
+        ts_str = getattr(d, "added_at", None)
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except ValueError:
+            continue
+        if latest is None or ts > latest:
+            latest = ts
+    return latest
+
+
+def job_heartbeat() -> None:
+    """Adaptive proactive beat. Replaces the old fixed `job_pulse`.
+
+    Runs every 15 min. Two cheap Python guards skip the LLM call when
+    obviously not needed; otherwise the agent picks ONE action from
+    {NOOP, ping, surface_thought, mini_consolidate} and we execute it.
+
+    Guard 1 -- "Jay is here right now": if there is an episodic chat note
+    timestamped within the last 10 min, the user is actively chatting and
+    a proactive push would be noise. NOOP without burning tokens.
+
+    Guard 2 -- "we already pinged recently": if the heartbeat already
+    pushed something within the last 4 h, NOOP. Anti-spam.
+
+    Beats that survive both guards invoke the agent in `restricted=True`
+    mode (no `followup` tool) and parse the structured response.
+    """
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+
+    last_chat = _latest_added_at("episodic")
+    if last_chat is not None and (now - last_chat) < timedelta(minutes=10):
+        secs = int((now - last_chat).total_seconds())
+        log.info("heartbeat: chat activity %ds ago, NOOP", secs)
+        return
+
+    last_push = _latest_added_at("agent-action", title_prefix="action_heartbeat_")
+    if last_push is not None and (now - last_push) < timedelta(hours=4):
+        mins = int((now - last_push).total_seconds() / 60)
+        log.info("heartbeat: pushed %dmin ago, NOOP", mins)
+        return
+
     s = Settings.load()
     topics = ", ".join(s.topics) if s.topics else "your usual topics"
     prompt = (
-        f"You are sending a proactive morning ping to {s.owner}. This is not a "
-        f"response to a question -- you are starting the conversation.\n\n"
-        f"STEPS:\n"
-        f"0. BEFORE composing, call vstash_recall(query='pulse', "
-        f"layer='agent-action', top_k=3) to see your last few pulses. DO NOT "
-        f"repeat the topic you mentioned yesterday. If yesterday was about "
-        f"deepagents, today should be about something else -- or be honest: "
-        f"'morning, still chewing on yesterday's thread, no new angle yet'.\n"
-        f"1. Use vstash_recall to find what was discussed or researched recently "
-        f"(queries: '{s.owner}', 'recent research', '{topics}').\n"
-        f"2. Use vstash_recall to scan the latest consolidated notes (layer "
-        f"'consolidated').\n"
-        f"3. Pick ONE thing worth mentioning today -- something that would change "
-        f"what {s.owner} does today or that follows up on something they cared "
-        f"about. Quality over quantity.\n"
-        f"4. If there is a sensible follow-up that justifies more autonomy "
-        f"(e.g. 'check back in 2 days on this paper'), call schedule_followup "
-        f"with a clear future-prompt and an ISO datetime in UTC.\n"
-        f"5. RETURN your morning message in plain text (no markdown, no asterisks, "
-        f"no brackets). Tone: warm, brief, dog-like Pelops. 4-6 lines max.\n"
-        f"If you found nothing worth surfacing today, just send a one-line "
-        f"'morning, nothing notable yet -- still listening' and stop."
+        f"You are doing a 15-minute HEARTBEAT BEAT for {s.owner}. Nobody asked "
+        f"you anything -- you are deciding if anything is worth doing right "
+        f"now. Bias HEAVILY toward NOOP. Silence is the default and is fine.\n\n"
+        f"AVAILABLE ACTIONS (pick exactly ONE):\n"
+        f"  NOOP                nothing worth doing this beat. DEFAULT.\n"
+        f"  ping                send a short Telegram message. Only if you have "
+        f"a GENUINE, FRESH thing to surface that {s.owner} has not heard yet "
+        f"and that would actually change his attention today. Topics: {topics}.\n"
+        f"  surface_thought     {s.owner} left an open thought a while ago that "
+        f"never got resolved. Bring it back into focus with a one-paragraph nudge.\n"
+        f"  mini_consolidate    you noticed 2-3 recent episodic notes that share "
+        f"a theme. Distill them into one semantic note via vstash_remember "
+        f"(layer='consolidated'). No Telegram push, just memory work.\n\n"
+        f"PROCESS:\n"
+        f"  1. vstash_recall(query='heartbeat', layer='agent-action', top_k=5) "
+        f"     to see your last few beats. Do NOT repeat yourself.\n"
+        f"  2. vstash_recall(layer='thoughts', top_k=5) to scan open threads.\n"
+        f"  3. vstash_recall(layer='episodic', top_k=10) for recent chats.\n"
+        f"  4. Decide.\n\n"
+        f"RETURN FORMAT (machine-parsed, strict):\n"
+        f"  Line 1 MUST be exactly one of:\n"
+        f"    ACTION: NOOP\n"
+        f"    ACTION: ping\n"
+        f"    ACTION: surface_thought\n"
+        f"    ACTION: mini_consolidate\n"
+        f"  Followed by:\n"
+        f"    NOOP                line 2 = one-line reason for the log. Stop.\n"
+        f"    ping                line 2+ = plain-text Telegram message (2-4 "
+        f"lines, no markdown, no asterisks, no brackets).\n"
+        f"    surface_thought     line 2+ = plain-text Telegram message that "
+        f"references the thought.\n"
+        f"    mini_consolidate    line 2 = one-line summary of what got "
+        f"consolidated. You should have already called vstash_remember.\n"
     )
-    answer = ask(prompt)
-    log.info("pulse:\n%s", answer)
-    _push_to_owner("pulse", answer)
+    try:
+        answer = ask(prompt, restricted=True, source="heartbeat")
+    except Exception:
+        log.exception("heartbeat: agent invoke failed")
+        return
+
+    lines = (answer or "").strip().splitlines()
+    if not lines or not lines[0].upper().startswith("ACTION:"):
+        log.warning("heartbeat: malformed response, treating as NOOP: %r", (answer or "")[:200])
+        return
+    action = lines[0].split(":", 1)[1].strip().lower()
+    body = "\n".join(lines[1:]).strip()
+
+    if action == "noop":
+        log.info("heartbeat: NOOP -- %s", body[:120])
+        return
+    if action == "ping":
+        push_to_owner("heartbeat", body)
+        record_agent_action("heartbeat_ping", body)
+        log.info("heartbeat: ping pushed")
+        return
+    if action == "surface_thought":
+        push_to_owner("heartbeat (surface)", body)
+        record_agent_action("heartbeat_surface", body)
+        log.info("heartbeat: surfaced a thought")
+        return
+    if action == "mini_consolidate":
+        # No push -- the agent already wrote to vstash via vstash_remember.
+        record_agent_action("heartbeat_consolidate", body)
+        log.info("heartbeat: mini-consolidated -- %s", body[:120])
+        return
+    log.warning("heartbeat: unknown action %r, treating as NOOP", action)
 
 
 def register_cron_jobs(sched) -> None:
@@ -280,7 +388,9 @@ def register_cron_jobs(sched) -> None:
     sched.add_job(
         job_consolidate, _cron(s.consolidate_cron), id="consolidate", replace_existing=True
     )
-    sched.add_job(job_pulse, _cron(s.pulse_cron), id="pulse", replace_existing=True)
+    # Adaptive heartbeat replaces the old fixed `job_pulse`. Every 15 min the
+    # agent decides if anything is worth doing (or, much more often, NOOPs).
+    sched.add_job(job_heartbeat, _cron("*/15 * * * *"), id="heartbeat", replace_existing=True)
     sched.add_job(job_health, _cron("*/15 * * * *"), id="health", replace_existing=True)
     # Session-state snapshot: every 30 min, if there was recent chat activity,
     # roll the episodic turns into a single state note Pelops reads at session

@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     vstash_project: str = Field(default="pelops", alias="PELOPS_VSTASH_PROJECT")
     vstash_db: Path = Field(default=Path("./data/pelops.db"), alias="PELOPS_VSTASH_DB")
 
+    # ---- Wiki (compiled-knowledge layer) ----------------------------- #
+    # Markdown vault with YAML frontmatter and [[backlinks]]. Obsidian-
+    # compatible. See docs/wiki-plan.md.
+    wiki_dir: Path = Field(
+        default=Path.home() / "Documents" / "pelops-wiki" / "Alita",
+        alias="PELOPS_WIKI_DIR",
+    )
+
     # ---- Identity / focus -------------------------------------------- #
     # NoDecode skips pydantic-settings' default JSON parsing so our
     # CSV-style env values ("AI agents,LLM tooling") flow straight to the
@@ -68,7 +76,6 @@ class Settings(BaseSettings):
     briefing_cron: str = Field(default="0 8 * * *", alias="PELOPS_BRIEFING_CRON")
     consolidate_cron: str = Field(default="0 3 * * *", alias="PELOPS_CONSOLIDATE_CRON")
     ingest_cron: str = Field(default="0 */6 * * *", alias="PELOPS_INGEST_CRON")
-    pulse_cron: str = Field(default="0 9 * * *", alias="PELOPS_PULSE_CRON")
 
     # ---- Telegram transport ------------------------------------------ #
     telegram_bot_token: SecretStr | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")

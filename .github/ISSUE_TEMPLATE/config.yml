@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Project decisions and conventions
+    url: https://github.com/stffns/alita/blob/main/CLAUDE.md
+    about: Architectural decisions, branch workflow, and conventions live in CLAUDE.md.
