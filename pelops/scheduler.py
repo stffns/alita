@@ -289,10 +289,16 @@ def job_heartbeat() -> None:
     a proactive push would be noise. NOOP without burning tokens.
 
     Guard 2 -- "we already pinged recently": if the heartbeat already
-    pushed something within the last 4 h, NOOP. Anti-spam.
+    pushed something within the last 2 h, NOOP. Anti-spam.
 
     Beats that survive both guards invoke the agent in `restricted=True`
     mode (no `followup` tool) and parse the structured response.
+
+    The prompt deliberately tells the agent "silence forever is failure".
+    Earlier versions said "bias HEAVILY toward NOOP" which led to streaks
+    of 5+ NOOPs and Alita felt passive. We now inject concrete activity
+    signals (time since last action, fresh vstash ingestions) so the
+    agent has real data to decide on instead of guessing.
     """
     from datetime import timedelta
 
@@ -305,33 +311,66 @@ def job_heartbeat() -> None:
         return
 
     last_push = _latest_added_at("agent-action", title_prefix="action_heartbeat_")
-    if last_push is not None and (now - last_push) < timedelta(hours=4):
+    if last_push is not None and (now - last_push) < timedelta(hours=2):
         mins = int((now - last_push).total_seconds() / 60)
         log.info("heartbeat: pushed %dmin ago, NOOP", mins)
         return
 
+    # Real signals to inject into the prompt. Replaces hallucination
+    # space ("Last heartbeat was 8 hours ago (morning pulse)" -- there
+    # was never a morning pulse) with measured facts.
+    if last_push is None:
+        quiet_msg = "You have not taken ANY heartbeat action yet."
+    else:
+        hours = (now - last_push).total_seconds() / 3600
+        quiet_msg = f"Your last heartbeat action was {hours:.1f}h ago."
+
+    fresh_signals = []
+    for layer in ("rss", "research", "consolidated", "thoughts"):
+        ts = _latest_added_at(layer)
+        if ts is not None:
+            age_h = (now - ts).total_seconds() / 3600
+            if age_h < 12:
+                fresh_signals.append(f"{layer} updated {age_h:.1f}h ago")
+    fresh_msg = "; ".join(fresh_signals) if fresh_signals else "no vstash activity in the last 12h"
+
     s = Settings.load()
     topics = ", ".join(s.topics) if s.topics else "your usual topics"
     prompt = (
-        f"You are doing a 15-minute HEARTBEAT BEAT for {s.owner}. Nobody asked "
-        f"you anything -- you are deciding if anything is worth doing right "
-        f"now. Bias HEAVILY toward NOOP. Silence is the default and is fine.\n\n"
+        f"You are doing a 15-minute heartbeat beat for {s.owner}. Nobody "
+        f"asked you anything -- you are deciding if anything is worth doing "
+        f"right now.\n\n"
+        f"OBSERVED CONTEXT (factual, do not invent more):\n"
+        f"  - {quiet_msg}\n"
+        f"  - Vstash activity: {fresh_msg}.\n"
+        f"  - Topics of interest: {topics}.\n\n"
+        f"DECISION FRAMING:\n"
+        f"  - NOOP is fine when nothing genuinely new happened.\n"
+        f"  - BUT silence forever is failure. You are meant to be a "
+        f"proactive companion, not a chatbot that speaks only when spoken "
+        f"to. If there is fresh material in vstash and you have not yet "
+        f"surfaced it, that is a reason to act.\n"
+        f"  - If your last few beats were ALL NOOP and you see ANY fresh "
+        f"activity above, lean toward surface_thought or mini_consolidate "
+        f"rather than another NOOP. Those are low-noise options "
+        f"(mini_consolidate sends NOTHING to Telegram, it just compiles "
+        f"memory).\n\n"
         f"AVAILABLE ACTIONS (pick exactly ONE):\n"
-        f"  NOOP                nothing worth doing this beat. DEFAULT.\n"
-        f"  ping                send a short Telegram message. Only if you have "
-        f"a GENUINE, FRESH thing to surface that {s.owner} has not heard yet "
-        f"and that would actually change his attention today. Topics: {topics}.\n"
-        f"  surface_thought     {s.owner} left an open thought a while ago that "
-        f"never got resolved. Bring it back into focus with a one-paragraph nudge.\n"
-        f"  mini_consolidate    you noticed 2-3 recent episodic notes that share "
-        f"a theme. Distill them into one semantic note via vstash_remember "
-        f"(layer='consolidated'). No Telegram push, just memory work.\n\n"
+        f"  NOOP                Nothing of substance to act on. Log the reason.\n"
+        f"  ping                Send a SHORT Telegram message about a fresh, "
+        f"genuine thing {s.owner} has not heard yet. High signal-to-noise.\n"
+        f"  surface_thought     Bring back an open thought from layer='thoughts' "
+        f"that has not been resolved. Gentle Telegram nudge.\n"
+        f"  mini_consolidate    Cluster 2-3 recent episodic / rss / research "
+        f"notes into one semantic note via "
+        f"vstash_remember(layer='consolidated', ...). No Telegram push.\n\n"
         f"PROCESS:\n"
         f"  1. vstash_recall(query='heartbeat', layer='agent-action', top_k=5) "
         f"     to see your last few beats. Do NOT repeat yourself.\n"
         f"  2. vstash_recall(layer='thoughts', top_k=5) to scan open threads.\n"
-        f"  3. vstash_recall(layer='episodic', top_k=10) for recent chats.\n"
-        f"  4. Decide.\n\n"
+        f"  3. vstash_recall(layer='rss', top_k=5) to scan fresh feeds.\n"
+        f"  4. vstash_recall(layer='episodic', top_k=10) for recent chats.\n"
+        f"  5. Decide based on what you find, not on what you wish was there.\n\n"
         f"RETURN FORMAT (machine-parsed, strict):\n"
         f"  Line 1 MUST be exactly one of:\n"
         f"    ACTION: NOOP\n"
