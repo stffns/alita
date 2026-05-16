@@ -247,22 +247,33 @@ def job_session_snapshot() -> None:
     log.info("session-snapshot composed:\n%s", answer[:300])
 
 
-def _latest_added_at(layer: str, title_prefix: str | None = None) -> datetime | None:
-    """Newest `added_at` timestamp across docs in a given layer.
+def _latest_per_layer(
+    layer_filters: dict[str, str | None] | None = None,
+) -> dict[str, datetime | None]:
+    """Single scan of vstash that returns the newest `added_at` per layer.
 
-    Returns a tz-aware datetime, or None if no matching doc exists.
-    Used by `job_heartbeat` for cheap Python-side activity checks before
-    spending tokens on an LLM call.
+    Pass `{layer: title_prefix_or_None}` mapping. Returns the same keys
+    with either a tz-aware datetime or None. Doing this in one pass
+    avoids the previous N-times full scan (one per layer) -- the
+    heartbeat fires every 15 min and the vault grows, so 6 passes
+    becomes a real cost.
+
+    All returned datetimes are coerced to UTC-aware so callers can
+    subtract from `datetime.now(UTC)` without TypeErrors when an old
+    vstash row happens to lack a tz offset in its stored string.
     """
+    filters = layer_filters or {}
+    latest: dict[str, datetime | None] = {layer: None for layer in filters}
     try:
         docs = list(get_memory().list())
     except Exception as exc:
         log.warning("heartbeat: vstash list() failed: %s", exc)
-        return None
-    latest: datetime | None = None
+        return latest
     for d in docs:
-        if getattr(d, "layer", None) != layer:
+        layer = getattr(d, "layer", None)
+        if layer not in filters:
             continue
+        title_prefix = filters[layer]
         if title_prefix and not (getattr(d, "title", "") or "").startswith(title_prefix):
             continue
         ts_str = getattr(d, "added_at", None)
@@ -272,8 +283,16 @@ def _latest_added_at(layer: str, title_prefix: str | None = None) -> datetime | 
             ts = datetime.fromisoformat(ts_str)
         except ValueError:
             continue
-        if latest is None or ts > latest:
-            latest = ts
+        # Coerce naive timestamps to UTC so all comparisons are safe
+        # against `datetime.now(UTC)`. vstash currently stores ISO with
+        # offset, but the contract is not enforced -- defensive.
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        else:
+            ts = ts.astimezone(UTC)
+        current = latest[layer]
+        if current is None or ts > current:
+            latest[layer] = ts
     return latest
 
 
@@ -304,13 +323,26 @@ def job_heartbeat() -> None:
 
     now = datetime.now(UTC)
 
-    last_chat = _latest_added_at("episodic")
+    # One full scan across all the layers we care about. Replaces six
+    # separate `_latest_added_at` calls that each walked vstash.
+    latest = _latest_per_layer(
+        {
+            "episodic": None,
+            "agent-action": "action_heartbeat_",
+            "rss": None,
+            "research": None,
+            "consolidated": None,
+            "thoughts": None,
+        }
+    )
+
+    last_chat = latest["episodic"]
     if last_chat is not None and (now - last_chat) < timedelta(minutes=10):
         secs = int((now - last_chat).total_seconds())
         log.info("heartbeat: chat activity %ds ago, NOOP", secs)
         return
 
-    last_push = _latest_added_at("agent-action", title_prefix="action_heartbeat_")
+    last_push = latest["agent-action"]
     if last_push is not None and (now - last_push) < timedelta(hours=2):
         mins = int((now - last_push).total_seconds() / 60)
         log.info("heartbeat: pushed %dmin ago, NOOP", mins)
@@ -326,8 +358,8 @@ def job_heartbeat() -> None:
         quiet_msg = f"Your last heartbeat action was {hours:.1f}h ago."
 
     fresh_signals = []
-    for layer in ("rss", "research", "consolidated", "thoughts"):
-        ts = _latest_added_at(layer)
+    for layer in ("rss", "research", "consolidated", "thoughts", "episodic"):
+        ts = latest[layer]
         if ts is not None:
             age_h = (now - ts).total_seconds() / 3600
             if age_h < 12:
