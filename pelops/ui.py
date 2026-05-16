@@ -22,6 +22,9 @@ async def on_chat_start() -> None:
     s = Settings.load()
     cl.user_session.set("agent", build_agent())
     cl.user_session.set("history", [])
+    # Each Chainlit session gets its own checkpointer thread so a refresh
+    # of the tab can continue the same conversation.
+    cl.user_session.set("thread_id", f"chainlit-{cl.context.session.id}")
 
     # Inbox catch-up: show as a one-line notification with action buttons,
     # not as a chat message. Pelops's own welcome comes after.
@@ -157,10 +160,14 @@ async def on_message(message: cl.Message) -> None:
     response = cl.Message(author="Pelops", content="")
     final_text = ""
 
+    thread_id = cl.user_session.get("thread_id") or "chainlit-default"
     async for event in agent.astream_events(
         {"messages": messages},
         version="v2",
-        config={"callbacks": [MetricsCallback(source="chainlit")]},
+        config={
+            "callbacks": [MetricsCallback(source="chainlit")],
+            "configurable": {"thread_id": thread_id},
+        },
     ):
         kind = event["event"]
         if kind == "on_chat_model_stream":

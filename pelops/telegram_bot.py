@@ -135,11 +135,17 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         if not _owner_only(msg):
             return
         await bot.send_chat_action(msg.chat.id, "typing")
+        # One checkpointer thread per Telegram chat keeps each user's
+        # state isolated (and the conversation resumable across restarts).
+        config = {"configurable": {"thread_id": f"telegram-{msg.chat.id}"}}
         try:
             reply = await asyncio.to_thread(
-                lambda: agent.invoke({"messages": [{"role": "user", "content": msg.text}]})[
-                    "messages"
-                ][-1].content
+                lambda: (
+                    agent.invoke(
+                        {"messages": [{"role": "user", "content": msg.text}]},
+                        config=config,
+                    )["messages"][-1].content
+                )
             )
         except Exception as exc:
             log.exception("agent invoke failed")
