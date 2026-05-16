@@ -337,9 +337,11 @@ def _load_heartbeat_checks() -> list[str]:
         return [_DEFAULT_CHECK_FALLBACK]
     body = section_re.group(1)
     # Numbered items: `1.`, `2.`, etc. Capture from the number through to
-    # the next number-at-line-start (or end of section).
+    # the next number-at-line-start (or end of section). NOTE: no `\s*`
+    # at the front -- a nested numbered list inside a check (indented
+    # like "   1. sub-item") must NOT be parsed as a new top-level check.
     items = re.findall(
-        r"^\s*\d+\.\s+(.+?)(?=^\s*\d+\.\s|\Z)",
+        r"^\d+\.\s+(.+?)(?=^\d+\.\s|\Z)",
         body,
         flags=re.MULTILINE | re.DOTALL,
     )
@@ -350,8 +352,13 @@ def _load_heartbeat_checks() -> list[str]:
     return items
 
 
-def _rotation_index(num_checks: int) -> int:
+def _rotation_index(num_checks: int, now: datetime) -> int:
     """Deterministic round-robin index across beats without storing state.
+
+    Takes `now` as a parameter so the caller's already-computed timestamp
+    is reused (instead of re-calling `datetime.now(UTC)`). Removes the
+    edge case where two now() calls land on different sides of a 15-min
+    boundary.
 
     The 15-min beat number since unix epoch is monotonic and stateless.
     `beat_number % num_checks` rotates evenly. Skipping a beat (Python
@@ -361,7 +368,7 @@ def _rotation_index(num_checks: int) -> int:
     """
     if num_checks <= 0:
         return 0
-    beat = int(datetime.now(UTC).timestamp() // (15 * 60))
+    beat = int(now.timestamp() // (15 * 60))
     return beat % num_checks
 
 
@@ -413,7 +420,7 @@ def job_heartbeat() -> None:
         return
 
     checks = _load_heartbeat_checks()
-    idx = _rotation_index(len(checks))
+    idx = _rotation_index(len(checks), now)
     check_text = checks[idx]
 
     if last_push is None:
