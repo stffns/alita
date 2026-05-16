@@ -50,38 +50,13 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
+    from pelops.migrations import migrate
+
     p = _db_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    migrate(p)
     con = sqlite3.connect(str(p), isolation_level=None, timeout=10.0)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pelops_turns (
-            id                INTEGER PRIMARY KEY,
-            timestamp         TEXT NOT NULL,
-            model             TEXT,
-            prompt_tokens     INTEGER NOT NULL DEFAULT 0,
-            completion_tokens INTEGER NOT NULL DEFAULT 0,
-            duration_ms       INTEGER,
-            source            TEXT
-        )
-        """
-    )
-    con.execute("CREATE INDEX IF NOT EXISTS idx_turns_ts ON pelops_turns(timestamp)")
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pelops_tool_calls (
-            id          INTEGER PRIMARY KEY,
-            timestamp   TEXT NOT NULL,
-            name        TEXT NOT NULL,
-            duration_ms INTEGER,
-            ok          INTEGER NOT NULL DEFAULT 1,
-            error       TEXT
-        )
-        """
-    )
-    con.execute("CREATE INDEX IF NOT EXISTS idx_tools_ts ON pelops_tool_calls(timestamp, name)")
     return con
 
 

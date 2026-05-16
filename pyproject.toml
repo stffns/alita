@@ -38,6 +38,11 @@ dependencies = [
     "pydantic-settings>=2.0",
 ]
 
+[project.scripts]
+pelops-doctor = "pelops.doctor:run"
+pelops-bot = "pelops.telegram_bot:main"
+pelops-scheduler = "pelops.scheduler:main"
+
 [project.optional-dependencies]
 dev = [
     "ruff>=0.6.0",

@@ -158,7 +158,9 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    from pelops.logging_config import configure as configure_logging
+
+    configure_logging(level=logging.INFO)
     s = Settings.load()
     if not s.telegram_bot_token:
         raise SystemExit(

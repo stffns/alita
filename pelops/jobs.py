@@ -66,31 +66,15 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
+    from pelops.migrations import migrate
+
     p = _db_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    migrate(p)
     con = sqlite3.connect(str(p), isolation_level=None, timeout=10.0)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pelops_followups (
-            id            TEXT PRIMARY KEY,
-            label         TEXT,
-            prompt        TEXT NOT NULL,
-            run_at_utc    TEXT NOT NULL,
-            cron          TEXT,
-            created_at    TEXT NOT NULL,
-            claimed_at    TEXT,
-            fired_at      TEXT,
-            status        TEXT NOT NULL DEFAULT 'pending',
-            last_error    TEXT,
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            response      TEXT,
-            watcher_id    TEXT
-        )
-        """
-    )
-    # Migrations for older DBs.
+    # Legacy try/except ALTER calls kept temporarily as a belt-and-suspenders
+    # for DBs that pre-date the migrations module (no pelops_schema row).
     for ddl in (
         "ALTER TABLE pelops_followups ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE pelops_followups ADD COLUMN response TEXT",

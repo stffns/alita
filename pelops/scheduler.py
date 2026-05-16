@@ -405,7 +405,9 @@ def build_scheduler():
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    from pelops.logging_config import configure as configure_logging
+
+    configure_logging(level=logging.INFO)
     sched = build_scheduler()
     log.info("Pelops scheduler starting. Jobs:")
     for j in sched.get_jobs():

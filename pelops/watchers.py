@@ -52,46 +52,19 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
+    from pelops.migrations import migrate
+
     p = _db_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    migrate(p)
     con = sqlite3.connect(str(p), isolation_level=None, timeout=10.0)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pelops_watchers (
-            id                       TEXT PRIMARY KEY,
-            label                    TEXT,
-            query                    TEXT NOT NULL,
-            interval_seconds         INTEGER NOT NULL,
-            initial_interval_seconds INTEGER,
-            consecutive_noops        INTEGER NOT NULL DEFAULT 0,
-            last_checked_at          TEXT,
-            last_seen_hash           TEXT,
-            last_seen_response       TEXT,
-            active                   INTEGER NOT NULL DEFAULT 1,
-            created_at               TEXT NOT NULL,
-            last_alert_at            TEXT
-        )
-        """
-    )
-    # Migrate older rows.
-    for ddl in (
-        "ALTER TABLE pelops_watchers ADD COLUMN initial_interval_seconds INTEGER",
-        "ALTER TABLE pelops_watchers ADD COLUMN consecutive_noops INTEGER NOT NULL DEFAULT 0",
-    ):
-        try:
-            con.execute(ddl)
-        except sqlite3.OperationalError:
-            pass
+    # Backfill the initial_interval column for rows that pre-date the
+    # adaptive-cadence feature (migration v3).
     con.execute(
         "UPDATE pelops_watchers "
         "SET initial_interval_seconds = interval_seconds "
         "WHERE initial_interval_seconds IS NULL"
-    )
-    con.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pelops_watchers_due "
-        "ON pelops_watchers(active, last_checked_at)"
     )
     return con
 
