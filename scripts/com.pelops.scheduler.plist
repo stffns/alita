@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pelops.scheduler</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt/.venv/bin/python</string>
+    <string>-m</string>
+    <string>pelops.scheduler</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONPATH</key>
+    <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt/data/logs/scheduler.out</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt/data/logs/scheduler.err</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

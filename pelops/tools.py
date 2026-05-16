@@ -1,0 +1,426 @@
+"""Tools exposed to the Pelops agent.
+
+Three groups:
+  - memory: persistent recall via vstash
+  - research: web search + page extraction via groq/compound
+  - ingest: pull RSS or a single URL into memory
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import feedparser
+from groq import Groq
+from langchain_core.tools import tool
+from vstash.ingest import ingest_text
+
+from pelops import jobs, watchers
+from pelops.config import Settings
+from pelops.memory import get_memory
+
+
+# Layer taxonomy. Every note in vstash MUST be tagged with exactly one of
+# these. The agent uses them to filter recall and avoid conflating sources.
+LAYER_USER = "user-fact"          # things Jay personally told Pelops about himself
+LAYER_RESEARCH = "research"       # syntheses produced by the researcher sub-agent
+LAYER_BRIEFING = "briefing"       # morning briefings the scheduler produced
+LAYER_CONSOLIDATED = "consolidated"  # semantic notes the nightly consolidator produced
+LAYER_RSS = "rss"                 # raw RSS ingest dumps (rarely worth recalling directly)
+LAYER_AGENT_ACTION = "agent-action"  # things Pelops has pushed to Jay (own history)
+LAYER_THOUGHTS = "thoughts"       # Pelops's own evolving curiosity, hypotheses, questions
+LAYER_EPISODIC = "episodic"       # raw chat turns (user msg + response) for continuous recall
+LAYER_SESSION_STATE = "session-state"  # rolling summary of recent activity for cross-session continuity
+ALL_LAYERS = (
+    LAYER_USER, LAYER_RESEARCH, LAYER_BRIEFING,
+    LAYER_CONSOLIDATED, LAYER_RSS, LAYER_AGENT_ACTION,
+    LAYER_THOUGHTS, LAYER_EPISODIC, LAYER_SESSION_STATE,
+)
+
+
+def record_chat_turn(user_msg: str, response: str, source: str = "chat") -> None:
+    """Save a chat exchange to vstash for continuous episodic recall.
+
+    Builds a single note per turn so future Pelops can do:
+        vstash_recall(query='...', layer='episodic')
+    and surface what was actually said. This is the missing piece between
+    "in-session context" (short, ephemeral) and "user-fact" (curated). It
+    is the raw river of conversation.
+    """
+    import logging
+    log = logging.getLogger("pelops.tools.record_chat_turn")
+    if not user_msg or not response:
+        return
+    # Skip trivial turns to keep recall signal-dense.
+    if len(user_msg.strip()) < 4 and len(response.strip()) < 20:
+        return
+    try:
+        from vstash.ingest import ingest_text
+        from datetime import datetime, timezone
+        mem = get_memory()
+        s = Settings.load()
+        ts = datetime.now(timezone.utc)
+        title = f"chat_{source}_{ts.strftime('%Y%m%d_%H%M%S')}"
+        body = (
+            f"# Chat turn ({source})\n"
+            f"Date: {ts.isoformat()}\n\n"
+            f"## Jay\n{user_msg}\n\n"
+            f"## Pelops\n{response}"
+        )
+        ingest_text(
+            text=body,
+            title=title,
+            cfg=mem._cfg,
+            store=mem._store,
+            project=s.vstash_project,
+            layer=LAYER_EPISODIC,
+            tags=f"episodic,{source}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("record_chat_turn failed: %s", exc)
+
+
+def record_agent_action(label: str, content: str) -> None:
+    """Save a record of an autonomous push Pelops just made.
+
+    This is the "agent-action" memory layer -- it lets future-you (in a
+    cron job, watcher alert, or chat turn) see what you have already told
+    Jay so you do not repeat yourself.
+
+    Safe to call from any process. Failures are logged and swallowed --
+    a memory miss must never block a push.
+    """
+    import logging
+    log = logging.getLogger("pelops.tools.record_agent_action")
+    try:
+        from vstash.ingest import ingest_text
+        from datetime import datetime, timezone
+        mem = get_memory()
+        s = Settings.load()
+        title = (
+            f"action_{label}_"
+            f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}"
+        )
+        ingest_text(
+            text=content,
+            title=title,
+            cfg=mem._cfg,
+            store=mem._store,
+            project=s.vstash_project,
+            layer=LAYER_AGENT_ACTION,
+            tags=f"action,{label}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("record_agent_action failed: %s", exc)
+
+
+def _groq() -> Groq:
+    return Groq(api_key=Settings.load().groq_api_key.get_secret_value())
+
+
+@tool
+def now(tz: str = "UTC") -> str:
+    """Return the current absolute time. Use this whenever you need to ground
+    yourself before computing dates, scheduling follow-ups, or referencing
+    "today/tomorrow".
+
+    Args:
+        tz: Timezone for the returned timestamp. Defaults to UTC. Accepted:
+            'UTC', 'CEST', 'CET', or any IANA name like 'Europe/Berlin'.
+
+    Returns:
+        A string like '2026-05-14T17:42:18+00:00 (UTC, day=Thursday)'.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    aliases = {"CEST": "Europe/Berlin", "CET": "Europe/Berlin", "UTC": "UTC"}
+    name = aliases.get(tz.upper(), tz)
+    try:
+        zone = ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return f"(unknown timezone {tz!r}; try 'UTC' or 'Europe/Berlin')"
+    t = datetime.now(zone)
+    return f"{t.isoformat(timespec='seconds')} ({tz}, day={t.strftime('%A')})"
+
+
+@tool
+def vstash_recall(query: str, layer: str | None = None, top_k: int = 5) -> str:
+    """Search Pelops's long-term memory for relevant past notes.
+
+    Use this BEFORE answering questions about anything Jay has discussed before,
+    or anything Pelops has previously researched and stored.
+
+    Args:
+        query: natural-language query.
+        layer: filter by layer. Use to AVOID CONFLATING SOURCES:
+            - 'user-fact'    -> only things Jay said about himself
+            - 'research'     -> only research syntheses Pelops produced
+            - 'briefing'     -> only morning briefings
+            - 'consolidated' -> only nightly-consolidated semantic notes
+            - 'rss'          -> raw RSS ingest dumps
+            Omit to search across all layers (only do this for broad
+            exploratory queries; for "what do you know about Jay?" pass
+            layer='user-fact').
+        top_k: number of results.
+    """
+    results = get_memory().search(query, top_k=top_k, layer=layer)
+    if not results:
+        return "(no relevant memories found)"
+    lines = []
+    for i, r in enumerate(results, 1):
+        score = getattr(r, "score", None)
+        text = getattr(r, "text", None) or getattr(r, "content", "") or str(r)
+        source = getattr(r, "source", "") or getattr(r, "path", "")
+        lines.append(f"[{i}] score={score:.3f} source={source}\n{text}\n")
+    return "\n".join(lines)
+
+
+@tool
+def vstash_remember(
+    content: str,
+    title: str | None = None,
+    layer: str = LAYER_USER,
+    tags: str | None = None,
+) -> str:
+    """Save a new note into Pelops's long-term memory.
+
+    Args:
+        content: the note to save.
+        title: short kebab-case-ish slug (used to retrieve later).
+        layer: REQUIRED. Pick ONE of:
+            - 'user-fact'    -> things Jay said about himself or his preferences
+            - 'research'     -> a synthesis of research Pelops did for Jay
+            - 'briefing'     -> a daily briefing produced by the scheduler
+            - 'consolidated' -> a semantic note distilled from many episodic ones
+            - 'rss'          -> raw RSS ingest dump
+            Mixing layers makes future recall fuzzy. Be deliberate.
+        tags: optional comma-separated free-form tags. Layer is the
+            primary filter; tags are for free-form annotation.
+    """
+    if layer not in ALL_LAYERS:
+        return (
+            f"Error: layer={layer!r} is not one of {ALL_LAYERS}. "
+            f"Pick exactly one and re-call."
+        )
+    mem = get_memory()
+    s = Settings.load()
+    result = ingest_text(
+        text=content,
+        title=title,
+        cfg=mem._cfg,
+        store=mem._store,
+        project=s.vstash_project,
+        layer=layer,
+        tags=tags,
+    )
+    chunks = getattr(result, "chunks", None) or getattr(result, "chunk_count", "?")
+    return f"Stored {chunks} chunk(s) as '{title or 'auto'}'."
+
+
+@tool
+def research(query: str, deep: bool = False) -> str:
+    """Investigate a topic on the open web via Groq Compound.
+
+    Compound autonomously runs web search + visit + (optionally) code execution
+    server-side and returns a synthesized answer. Use this for anything that
+    requires fresh information, multiple sources, or fact-checking.
+
+    Args:
+        query: The research question, written as a clear natural-language prompt.
+        deep: If True, uses groq/compound (up to 10 tool calls, slower, more thorough).
+              If False, uses groq/compound-mini (1 tool call, ~3x faster).
+    """
+    s = Settings.load()
+    model = s.research_model if deep else s.research_model_fast
+    resp = _groq().chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": query}],
+    )
+    return resp.choices[0].message.content or "(empty response)"
+
+
+@tool
+def fetch_rss(feed_url: str, limit: int = 5) -> str:
+    """Fetch the latest N entries from an RSS/Atom feed.
+
+    Returns a compact summary (title + link + published + summary). Useful when
+    Pelops wants to scan a known feed before deciding what to research deeply.
+    """
+    parsed = feedparser.parse(feed_url)
+    if parsed.bozo and not parsed.entries:
+        return f"(failed to parse feed: {feed_url})"
+    entries = parsed.entries[:limit]
+    lines = [f"# {parsed.feed.get('title', feed_url)}"]
+    for e in entries:
+        title = e.get("title", "(untitled)")
+        link = e.get("link", "")
+        published = e.get("published", "")
+        summary = (e.get("summary", "") or "")[:300]
+        lines.append(f"\n## {title}\n{link}\n{published}\n{summary}")
+    return "\n".join(lines)
+
+
+@tool
+def followup(
+    action: str,
+    prompt: str | None = None,
+    when: str | None = None,
+    label: str = "followup",
+    job_id: str | None = None,
+) -> str:
+    """Manage scheduled follow-ups -- single tool with action-style operations.
+
+    Use this whenever a conversation implies a future action, OR when the
+    user asks you to list or cancel previously scheduled follow-ups.
+
+    Args:
+        action: One of "schedule", "list", or "cancel".
+
+        prompt: (action="schedule" only) The instruction you will receive
+            when the trigger fires. Write it AS IF you are sending a message
+            to your future self -- include enough context that the future
+            invocation knows what to do.
+
+        when: (action="schedule" only) When to fire. PREFER relative offsets
+            over absolute dates -- you are bad at date arithmetic.
+
+            Accepted forms (in this order of preference):
+            1. Relative offset (BEST for short waits):
+                'in 2 minutes', 'in 3 hours', 'in 1 day', 'in 2 weeks'
+                The server computes the absolute time from "now". Use this
+                whenever the user says "in N units", "tomorrow", etc.
+            2. 5-field cron (for repeating jobs):
+                '0 9 * * *'    -- daily at 09:00 UTC
+                '0 9 * * mon'  -- mondays at 09:00 UTC
+            3. ISO datetime in UTC (only when you have a SPECIFIC absolute time):
+                '2026-05-15T09:00:00'
+
+            Do NOT compute ISO datetimes from natural language. If unsure,
+            use the relative form.
+
+        label: (action="schedule" only) Short slug to identify the job.
+
+        job_id: (action="cancel" only) The id returned when the job was
+            originally scheduled.
+
+    Returns:
+        - action="schedule" -> "Scheduled. job_id=fu_xxx when=..."
+        - action="list" -> a newline-separated list of pending jobs
+        - action="cancel" -> "Cancelled <id>." or "No active job named <id>."
+    """
+    action = (action or "").strip().lower()
+    if action == "schedule":
+        if not prompt or not when:
+            return "Error: action='schedule' requires both `prompt` and `when`."
+        try:
+            new_id = jobs.add(prompt=prompt, when=when, label=label)
+        except ValueError as exc:
+            return (
+                f"Error: could not schedule. {exc}. "
+                f"Tip: for compound offsets use 'in 15 hours and 29 minutes'; "
+                f"for absolute times use ISO 'YYYY-MM-DDTHH:MM:SS' in UTC "
+                f"(use the `now` tool to ground yourself first)."
+            )
+        return f"Scheduled. job_id={new_id} when={when}"
+    if action == "list":
+        pending = jobs.list_pending()
+        if not pending:
+            return "(no scheduled follow-ups)"
+        return "\n".join(
+            f"- {j['id']}  next={j['run_at_utc']}  cron={j['cron'] or '-'}"
+            for j in pending
+        )
+    if action == "cancel":
+        if not job_id:
+            return "Error: action='cancel' requires `job_id`."
+        ok = jobs.cancel(job_id)
+        return f"Cancelled {job_id}." if ok else f"No active job named {job_id}."
+    return f"Error: unknown action {action!r}. Use schedule | list | cancel."
+
+
+@tool
+def watcher(
+    action: str,
+    query: str | None = None,
+    interval: str | None = None,
+    label: str = "watch",
+    watcher_id: str | None = None,
+) -> str:
+    """Watch a research query for changes. When the answer to the query
+    meaningfully changes, Pelops fires an autonomous alert.
+
+    This is what makes Pelops event-driven instead of clock-driven. Use it
+    when the user says: "vigila X", "avisame si Y cambia", "estate pendiente
+    de Z", "watch for new releases of A", etc.
+
+    Args:
+        action: "schedule", "list", or "cancel".
+
+        query: (action="schedule" only) The research query to re-run on the
+            interval. Write it like a focused web search question, e.g.
+            "Has Anthropic released a new model in the last 24h?"
+
+        interval: (action="schedule" only) How often to re-check. Forms:
+            - "every 30 minutes", "every 2 hours", "every 1 day"
+            - integer of seconds (minimum is 60)
+            Pick an interval that matches the topic's pace. Daily news
+            sources -> every 6h or every 1 day. Arxiv -> every 1 day.
+            Anything more frequent than every 30 minutes is wasteful.
+
+        label: (action="schedule" only) Short slug for log/list output.
+
+        watcher_id: (action="cancel" only) The id returned at schedule time.
+
+    Returns:
+        - schedule -> "Watching. watcher_id=w_xxx every=Ns"
+        - list -> newline-separated watcher rows
+        - cancel -> "Stopped <id>." or "No active watcher named <id>."
+    """
+    action = (action or "").strip().lower()
+    if action == "schedule":
+        if not query or not interval:
+            return "Error: action='schedule' requires `query` and `interval`."
+        try:
+            wid = watchers.add(query=query, interval=interval, label=label)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        return f"Watching. watcher_id={wid} every={interval}"
+    if action == "list":
+        active = watchers.list_active()
+        if not active:
+            return "(no active watchers)"
+        return "\n".join(
+            f"- {w['id']}  every={w['interval_seconds']}s  "
+            f"last_checked={w['last_checked_at'] or 'never'}  query={w['query'][:60]!r}"
+            for w in active
+        )
+    if action == "cancel":
+        if not watcher_id:
+            return "Error: action='cancel' requires `watcher_id`."
+        ok = watchers.cancel(watcher_id)
+        return f"Stopped {watcher_id}." if ok else f"No active watcher named {watcher_id}."
+    return f"Error: unknown action {action!r}. Use schedule | list | cancel."
+
+
+@tool
+def metrics_summary(hours: int = 24) -> str:
+    """Show Pelops's recent activity: LLM turns, tokens, cost, tool usage.
+
+    Use this when the user asks "what have you been doing", "what is this
+    costing", "which tool is slow", or any operational question. Returns a
+    short plain-text summary covering the last `hours` (default 24).
+    """
+    from pelops import metrics
+    return metrics.format_summary(metrics.summary(hours=hours))
+
+
+CHAT_TOOLS = [
+    now,
+    vstash_recall,
+    vstash_remember,
+    research,
+    fetch_rss,
+    followup,
+    watcher,
+    metrics_summary,
+]

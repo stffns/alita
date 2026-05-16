@@ -1,0 +1,38 @@
+# Secrets
+.env
+.env.local
+*.secret
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.venv/
+venv/
+
+# Local databases and logs (the actual data, not the schema)
+data/*.db
+data/*.db-*
+data/logs/
+*.log
+
+# Chainlit runtime
+.chainlit/
+chainlit.md
+
+# OS / Editor
+.DS_Store
+.idea/
+*.swp
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
