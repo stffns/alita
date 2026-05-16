@@ -58,17 +58,40 @@ def _discover_skill_sources() -> list[str]:
     return [str(SKILLS_DIR.relative_to(PROJECT_ROOT))]
 
 
+def _build_checkpointer():
+    """Return a LangGraph SQLite checkpointer for cross-session state.
+
+    The checkpointer persists agent state (messages, todos, in-flight tool
+    calls) keyed by thread_id. Lets the agent resume a planning thread
+    after a restart, and is REQUIRED for `interrupt_on` to work.
+
+    Returns None if langgraph-checkpoint-sqlite is not available -- the
+    agent still functions, just without state resume or HITL.
+    """
+    try:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+    except ImportError:
+        _log.warning("langgraph-checkpoint-sqlite not installed; checkpointer disabled")
+        return None
+    s = Settings.load()
+    db_path = Path(s.vstash_db).parent / "agent_state.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    return SqliteSaver(conn)
+
+
 @lru_cache(maxsize=2)
 def build_agent(restricted: bool = False):
     """Construct the Pelops deep agent.
 
     Args:
         restricted: When True, removes scheduling tools (`followup`) from
-            the toolset. Used when the agent is invoked as the RESULT of a
-            follow-up firing -- prevents runaway scheduling-inside-scheduling
-            (the Hermes-style guard). The agent in restricted mode can still
-            read state via vstash and produce output, but cannot create new
-            timed jobs.
+            the toolset AND disables `interrupt_on` (which needs a human
+            available to approve). Used when the agent is invoked as the
+            RESULT of a follow-up firing -- prevents runaway scheduling
+            and useless approval prompts in cron-driven flows.
     """
     s = Settings.load()
     model = _build_model(s.chat_model)
@@ -88,6 +111,13 @@ def build_agent(restricted: bool = False):
         trigger=[("messages", 60), ("tokens", 12_000)],
         keep=("messages", 20),
     )
+
+    # Interactive mode: require explicit approval before the agent saves a
+    # note to vstash. Prevents the "100 mediocre auto-notes overnight"
+    # failure mode. Autonomous flows (restricted=True) skip this because
+    # there is nobody around to approve.
+    interrupt_on = None if restricted else {"vstash_remember": True}
+
     return create_deep_agent(
         model=model,
         tools=tools,
@@ -96,6 +126,8 @@ def build_agent(restricted: bool = False):
         backend=backend,
         skills=skills,
         middleware=[summarizer],
+        checkpointer=_build_checkpointer(),
+        interrupt_on=interrupt_on,
     )
 
 
@@ -104,6 +136,7 @@ def ask(
     history: list[dict] | None = None,
     restricted: bool = False,
     source: str = "chat",
+    thread_id: str | None = None,
 ) -> str:
     """Synchronous helper for one-shot questions.
 
@@ -112,13 +145,19 @@ def ask(
 
     `source` tags the metric records so we can later see "how much did
     briefings cost this week" vs "how much did chat cost".
+
+    `thread_id` ties this invocation to a checkpointer thread for state
+    resume. Pass a stable id per conversation; passing None uses a
+    per-source default ("default-{source}") which is enough for our
+    single-user setup.
     """
     agent = build_agent(restricted=restricted)
     messages = list(history or [])
     messages.append({"role": "user", "content": message})
-    result = agent.invoke(
-        {"messages": messages},
-        config={"callbacks": [MetricsCallback(source=source)]},
-    )
+    config: dict = {
+        "callbacks": [MetricsCallback(source=source)],
+        "configurable": {"thread_id": thread_id or f"default-{source}"},
+    }
+    result = agent.invoke({"messages": messages}, config=config)
     final = result["messages"][-1]
     return getattr(final, "content", None) or str(final)
