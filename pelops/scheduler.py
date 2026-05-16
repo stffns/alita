@@ -247,22 +247,33 @@ def job_session_snapshot() -> None:
     log.info("session-snapshot composed:\n%s", answer[:300])
 
 
-def _latest_added_at(layer: str, title_prefix: str | None = None) -> datetime | None:
-    """Newest `added_at` timestamp across docs in a given layer.
+def _latest_per_layer(
+    layer_filters: dict[str, str | None] | None = None,
+) -> dict[str, datetime | None]:
+    """Single scan of vstash that returns the newest `added_at` per layer.
 
-    Returns a tz-aware datetime, or None if no matching doc exists.
-    Used by `job_heartbeat` for cheap Python-side activity checks before
-    spending tokens on an LLM call.
+    Pass `{layer: title_prefix_or_None}` mapping. Returns the same keys
+    with either a tz-aware datetime or None. Doing this in one pass
+    avoids the previous N-times full scan (one per layer) -- the
+    heartbeat fires every 15 min and the vault grows, so 6 passes
+    becomes a real cost.
+
+    All returned datetimes are coerced to UTC-aware so callers can
+    subtract from `datetime.now(UTC)` without TypeErrors when an old
+    vstash row happens to lack a tz offset in its stored string.
     """
+    filters = layer_filters or {}
+    latest: dict[str, datetime | None] = {layer: None for layer in filters}
     try:
         docs = list(get_memory().list())
     except Exception as exc:
         log.warning("heartbeat: vstash list() failed: %s", exc)
-        return None
-    latest: datetime | None = None
+        return latest
     for d in docs:
-        if getattr(d, "layer", None) != layer:
+        layer = getattr(d, "layer", None)
+        if layer not in filters:
             continue
+        title_prefix = filters[layer]
         if title_prefix and not (getattr(d, "title", "") or "").startswith(title_prefix):
             continue
         ts_str = getattr(d, "added_at", None)
@@ -272,8 +283,16 @@ def _latest_added_at(layer: str, title_prefix: str | None = None) -> datetime | 
             ts = datetime.fromisoformat(ts_str)
         except ValueError:
             continue
-        if latest is None or ts > latest:
-            latest = ts
+        # Coerce naive timestamps to UTC so all comparisons are safe
+        # against `datetime.now(UTC)`. vstash currently stores ISO with
+        # offset, but the contract is not enforced -- defensive.
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        else:
+            ts = ts.astimezone(UTC)
+        current = latest[layer]
+        if current is None or ts > current:
+            latest[layer] = ts
     return latest
 
 
@@ -289,49 +308,101 @@ def job_heartbeat() -> None:
     a proactive push would be noise. NOOP without burning tokens.
 
     Guard 2 -- "we already pinged recently": if the heartbeat already
-    pushed something within the last 4 h, NOOP. Anti-spam.
+    pushed something within the last 2 h, NOOP. Anti-spam.
 
     Beats that survive both guards invoke the agent in `restricted=True`
     mode (no `followup` tool) and parse the structured response.
+
+    The prompt deliberately tells the agent "silence forever is failure".
+    Earlier versions said "bias HEAVILY toward NOOP" which led to streaks
+    of 5+ NOOPs and Alita felt passive. We now inject concrete activity
+    signals (time since last action, fresh vstash ingestions) so the
+    agent has real data to decide on instead of guessing.
     """
     from datetime import timedelta
 
     now = datetime.now(UTC)
 
-    last_chat = _latest_added_at("episodic")
+    # One full scan across all the layers we care about. Replaces six
+    # separate `_latest_added_at` calls that each walked vstash.
+    latest = _latest_per_layer(
+        {
+            "episodic": None,
+            "agent-action": "action_heartbeat_",
+            "rss": None,
+            "research": None,
+            "consolidated": None,
+            "thoughts": None,
+        }
+    )
+
+    last_chat = latest["episodic"]
     if last_chat is not None and (now - last_chat) < timedelta(minutes=10):
         secs = int((now - last_chat).total_seconds())
         log.info("heartbeat: chat activity %ds ago, NOOP", secs)
         return
 
-    last_push = _latest_added_at("agent-action", title_prefix="action_heartbeat_")
-    if last_push is not None and (now - last_push) < timedelta(hours=4):
+    last_push = latest["agent-action"]
+    if last_push is not None and (now - last_push) < timedelta(hours=2):
         mins = int((now - last_push).total_seconds() / 60)
         log.info("heartbeat: pushed %dmin ago, NOOP", mins)
         return
 
+    # Real signals to inject into the prompt. Replaces hallucination
+    # space ("Last heartbeat was 8 hours ago (morning pulse)" -- there
+    # was never a morning pulse) with measured facts.
+    if last_push is None:
+        quiet_msg = "You have not taken ANY heartbeat action yet."
+    else:
+        hours = (now - last_push).total_seconds() / 3600
+        quiet_msg = f"Your last heartbeat action was {hours:.1f}h ago."
+
+    fresh_signals = []
+    for layer in ("rss", "research", "consolidated", "thoughts", "episodic"):
+        ts = latest[layer]
+        if ts is not None:
+            age_h = (now - ts).total_seconds() / 3600
+            if age_h < 12:
+                fresh_signals.append(f"{layer} updated {age_h:.1f}h ago")
+    fresh_msg = "; ".join(fresh_signals) if fresh_signals else "no vstash activity in the last 12h"
+
     s = Settings.load()
     topics = ", ".join(s.topics) if s.topics else "your usual topics"
     prompt = (
-        f"You are doing a 15-minute HEARTBEAT BEAT for {s.owner}. Nobody asked "
-        f"you anything -- you are deciding if anything is worth doing right "
-        f"now. Bias HEAVILY toward NOOP. Silence is the default and is fine.\n\n"
+        f"You are doing a 15-minute heartbeat beat for {s.owner}. Nobody "
+        f"asked you anything -- you are deciding if anything is worth doing "
+        f"right now.\n\n"
+        f"OBSERVED CONTEXT (factual, do not invent more):\n"
+        f"  - {quiet_msg}\n"
+        f"  - Vstash activity: {fresh_msg}.\n"
+        f"  - Topics of interest: {topics}.\n\n"
+        f"DECISION FRAMING:\n"
+        f"  - NOOP is fine when nothing genuinely new happened.\n"
+        f"  - BUT silence forever is failure. You are meant to be a "
+        f"proactive companion, not a chatbot that speaks only when spoken "
+        f"to. If there is fresh material in vstash and you have not yet "
+        f"surfaced it, that is a reason to act.\n"
+        f"  - If your last few beats were ALL NOOP and you see ANY fresh "
+        f"activity above, lean toward surface_thought or mini_consolidate "
+        f"rather than another NOOP. Those are low-noise options "
+        f"(mini_consolidate sends NOTHING to Telegram, it just compiles "
+        f"memory).\n\n"
         f"AVAILABLE ACTIONS (pick exactly ONE):\n"
-        f"  NOOP                nothing worth doing this beat. DEFAULT.\n"
-        f"  ping                send a short Telegram message. Only if you have "
-        f"a GENUINE, FRESH thing to surface that {s.owner} has not heard yet "
-        f"and that would actually change his attention today. Topics: {topics}.\n"
-        f"  surface_thought     {s.owner} left an open thought a while ago that "
-        f"never got resolved. Bring it back into focus with a one-paragraph nudge.\n"
-        f"  mini_consolidate    you noticed 2-3 recent episodic notes that share "
-        f"a theme. Distill them into one semantic note via vstash_remember "
-        f"(layer='consolidated'). No Telegram push, just memory work.\n\n"
+        f"  NOOP                Nothing of substance to act on. Log the reason.\n"
+        f"  ping                Send a SHORT Telegram message about a fresh, "
+        f"genuine thing {s.owner} has not heard yet. High signal-to-noise.\n"
+        f"  surface_thought     Bring back an open thought from layer='thoughts' "
+        f"that has not been resolved. Gentle Telegram nudge.\n"
+        f"  mini_consolidate    Cluster 2-3 recent episodic / rss / research "
+        f"notes into one semantic note via "
+        f"vstash_remember(layer='consolidated', ...). No Telegram push.\n\n"
         f"PROCESS:\n"
         f"  1. vstash_recall(query='heartbeat', layer='agent-action', top_k=5) "
         f"     to see your last few beats. Do NOT repeat yourself.\n"
         f"  2. vstash_recall(layer='thoughts', top_k=5) to scan open threads.\n"
-        f"  3. vstash_recall(layer='episodic', top_k=10) for recent chats.\n"
-        f"  4. Decide.\n\n"
+        f"  3. vstash_recall(layer='rss', top_k=5) to scan fresh feeds.\n"
+        f"  4. vstash_recall(layer='episodic', top_k=10) for recent chats.\n"
+        f"  5. Decide based on what you find, not on what you wish was there.\n\n"
         f"RETURN FORMAT (machine-parsed, strict):\n"
         f"  Line 1 MUST be exactly one of:\n"
         f"    ACTION: NOOP\n"
