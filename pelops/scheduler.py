@@ -461,16 +461,24 @@ def job_heartbeat() -> None:
         f"  3. If you want to refine this check or add a new one, call "
         f"wiki_write('heartbeat', updated_body, sources=[...]) before "
         f"returning your disposition.\n\n"
-        f"OUTPUT PROTOCOL (machine-parsed, strict):\n"
-        f"  Line 1 MUST be exactly ONE of:\n"
+        f"OUTPUT PROTOCOL (machine-parsed):\n"
+        f"  After all tool calls are done, your FINAL message must "
+        f"contain exactly ONE of these tokens on a line by itself "
+        f"(preferably as the FIRST line for cleanest logs):\n"
         f"    HEARTBEAT_OK\n"
         f"      Nothing matched the check. Silent disposition.\n"
         f"    PING\n"
-        f"      Lines 2+: plain-text Telegram message (2-4 lines, "
-        f"conversational prose, NO markdown, NO bullets, NO headings).\n"
+        f"      Lines immediately after PING: plain-text Telegram "
+        f"message (2-4 lines, conversational prose, NO markdown, NO "
+        f"bullets, NO headings).\n"
         f"    DONE: <one-line description>\n"
         f"      Action taken (research saved, wiki updated, etc). No "
-        f"Telegram push. The runner logs your description.\n"
+        f"Telegram push. The runner logs your description.\n\n"
+        f"REMEMBER -- the runner is forgiving and scans every line of "
+        f"your message for these tokens, but ONLY when the token sits "
+        f"alone on a line. Embedded mentions inside prose do not count. "
+        f"If no token appears alone on any line, the run is treated as "
+        f"HEARTBEAT_OK and your disposition is discarded.\n"
     )
 
     beat_thread = f"heartbeat-{now.strftime('%Y%m%d-%H%M')}"
@@ -480,15 +488,46 @@ def job_heartbeat() -> None:
         log.exception("heartbeat: agent invoke failed")
         return
 
+    # Forgiving parser: scan EVERY line for a disposition token, not just
+    # the first. The model sometimes produces leading garbage (especially
+    # after long tool-call chains where it loses the protocol) but still
+    # places a valid token somewhere in its final output. We pick the
+    # first valid token found.
     text = (answer or "").strip()
-    first_line = text.splitlines()[0].strip() if text else ""
+    lines = text.splitlines()
+    disposition: str | None = None
+    disposition_idx: int = -1
+    done_desc: str = ""
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper == "HEARTBEAT_OK":
+            disposition = "noop"
+            disposition_idx = i
+            break
+        if upper == "PING":
+            disposition = "ping"
+            disposition_idx = i
+            break
+        if upper.startswith("DONE:"):
+            disposition = "done"
+            disposition_idx = i
+            done_desc = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+            break
 
-    if first_line.upper() == "HEARTBEAT_OK":
+    if disposition is None:
+        log.warning(
+            "heartbeat: no disposition token found, treating as HEARTBEAT_OK: %r",
+            text[:200],
+        )
+        return
+
+    if disposition == "noop":
         log.info("heartbeat: HEARTBEAT_OK (check #%d)", idx + 1)
         return
 
-    if first_line.upper() == "PING":
-        body = "\n".join(text.splitlines()[1:]).strip()
+    if disposition == "ping":
+        body = "\n".join(lines[disposition_idx + 1 :]).strip()
         if not body:
             log.warning("heartbeat: PING with empty body, dropping")
             return
@@ -497,17 +536,10 @@ def job_heartbeat() -> None:
         log.info("heartbeat: PING pushed (check #%d)", idx + 1)
         return
 
-    if first_line.upper().startswith("DONE:"):
-        desc = first_line.split(":", 1)[1].strip() if ":" in first_line else ""
-        # The agent did the work via tools; we just record the disposition.
-        record_agent_action("heartbeat_done", f"check #{idx + 1}: {desc}")
-        log.info("heartbeat: DONE (check #%d) -- %s", idx + 1, desc[:120])
+    if disposition == "done":
+        record_agent_action("heartbeat_done", f"check #{idx + 1}: {done_desc}")
+        log.info("heartbeat: DONE (check #%d) -- %s", idx + 1, done_desc[:120])
         return
-
-    log.warning(
-        "heartbeat: malformed response, treating as HEARTBEAT_OK: %r",
-        text[:200],
-    )
 
 
 def register_cron_jobs(sched) -> None:
