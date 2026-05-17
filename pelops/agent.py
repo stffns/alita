@@ -133,6 +133,7 @@ def ask(
     restricted: bool = False,
     source: str = "chat",
     thread_id: str | None = None,
+    recursion_limit: int = 25,
 ) -> str:
     """Synchronous helper for one-shot questions.
 
@@ -140,6 +141,14 @@ def ask(
     resume. Passing None uses a per-source default ("default-{source}")
     which is fine for our single-user setup but means autonomous flows
     of the same kind share state -- normally desirable for cron jobs.
+
+    `recursion_limit` caps the number of model->tools->model iterations
+    LangGraph will run before stopping. Default 25 matches LangGraph's
+    own default. Heartbeats pass a higher value (50) because they often
+    chain several recall calls + a wiki_write + a final synthesis;
+    hitting the cap mid-chain leaves the agent with `content=''` and
+    no final disposition -- exactly the failure mode we saw on
+    2026-05-16 at 12:30 and 12:45.
     """
     agent = build_agent(restricted=restricted)
     messages = list(history or [])
@@ -149,6 +158,7 @@ def ask(
         config={
             "callbacks": [MetricsCallback(source=source)],
             "configurable": {"thread_id": thread_id or f"default-{source}"},
+            "recursion_limit": recursion_limit,
         },
     )
     final = result["messages"][-1]
