@@ -486,7 +486,7 @@ def job_heartbeat() -> None:
         # recursion_limit=50: heartbeats chain several recall calls + a
         # potential wiki_write + a final synthesis. The default 25 was
         # hitting the cap and producing empty content (no final
-        # disposition) -- saw this 2026-05-16 12:30 and 12:45.
+        # disposition).
         answer = ask(
             prompt,
             restricted=True,
