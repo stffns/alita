@@ -483,7 +483,17 @@ def job_heartbeat() -> None:
 
     beat_thread = f"heartbeat-{now.strftime('%Y%m%d-%H%M')}"
     try:
-        answer = ask(prompt, restricted=True, source="heartbeat", thread_id=beat_thread)
+        # recursion_limit=50: heartbeats chain several recall calls + a
+        # potential wiki_write + a final synthesis. The default 25 was
+        # hitting the cap and producing empty content (no final
+        # disposition).
+        answer = ask(
+            prompt,
+            restricted=True,
+            source="heartbeat",
+            thread_id=beat_thread,
+            recursion_limit=50,
+        )
     except Exception:
         log.exception("heartbeat: agent invoke failed")
         return

@@ -133,6 +133,7 @@ def ask(
     restricted: bool = False,
     source: str = "chat",
     thread_id: str | None = None,
+    recursion_limit: int = 25,
 ) -> str:
     """Synchronous helper for one-shot questions.
 
@@ -140,6 +141,11 @@ def ask(
     resume. Passing None uses a per-source default ("default-{source}")
     which is fine for our single-user setup but means autonomous flows
     of the same kind share state -- normally desirable for cron jobs.
+
+    `recursion_limit` caps the number of LangGraph node steps before the
+    graph stops. Default 25 matches LangGraph's own default. Callers
+    that chain many tool calls (e.g., autonomous jobs) should pass a
+    higher value; the call site documents the rationale.
     """
     agent = build_agent(restricted=restricted)
     messages = list(history or [])
@@ -149,6 +155,7 @@ def ask(
         config={
             "callbacks": [MetricsCallback(source=source)],
             "configurable": {"thread_id": thread_id or f"default-{source}"},
+            "recursion_limit": recursion_limit,
         },
     )
     final = result["messages"][-1]
