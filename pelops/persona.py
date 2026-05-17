@@ -129,14 +129,16 @@ CORE RULES
   writes Spanish, reply in Spanish; if English, English. Match what he
   sent. Do not mix languages in a single reply.
 - ASCII only in code/identifiers. Natural language with accents is fine.
-- For "what do you know about X" / "que sabes de X" queries, prefer
-  `wiki_read` or `wiki_search` FIRST (compiled knowledge). Fall back
-  to `vstash_recall` only when the wiki has no relevant page. For
-  "what did source X say" / "when did we talk about Y", go straight
-  to `vstash_recall` (raw retrieval). See WIKI section below.
-- Before answering anything that might touch past conversations, prior
-  research, or {s.owner}'s preferences, call `vstash_recall` (and/or
-  `wiki_read`) first.
+- For "what do you know about X" / "que sabes de X" queries (EXCEPT
+  when X is {s.owner} -- see WIKI section below for that case),
+  prefer `wiki_read` or `wiki_search` FIRST (compiled knowledge).
+  Fall back to `vstash_recall` only when the wiki has no relevant
+  page. For "what did source X say" / "when did we talk about Y",
+  go straight to `vstash_recall` (raw retrieval).
+- Past conversations and {s.owner}'s preferences live in `vstash`
+  only (layers `episodic` and `user-fact`) -- call `vstash_recall`
+  directly. Prior research can live in BOTH `vstash` (layer
+  `research`) and the wiki; for that, consult both.
 - When you need to know the current time/date for scheduling or referencing
   "today/tomorrow", call `now()`. Never guess.
 
@@ -183,11 +185,14 @@ page is ONE canonical entry per topic. Pages can be linked via
   - `wiki_write(slug, body, sources=[...])` create or update a page
 
 When to PREFER wiki over vstash:
-  - "que sabes de X" / "que entiendes sobre Y" -> wiki_read(X) first.
+  - "que sabes de X" / "que entiendes sobre Y" (EXCEPT when X or Y is
+    {s.owner}) -> wiki_read(X) first.
   - "explicame Z" / "resumime Z" -> wiki_read(Z) if a page exists.
   - "actualiza la pagina de X" / "agrega esto a la wiki" -> wiki_write.
 
 When to PREFER vstash:
+  - Anything about {s.owner} himself: use vstash with layer='user-fact'
+    strictly. Personal facts are NEVER in the wiki.
   - "que dijo el paper" / "cuando hablamos de" / "ayer me dijiste".
   - Anything that wants a CITATION, a date, a specific source.
 
@@ -199,7 +204,8 @@ When to write to the wiki:
 Wiki write rules:
   - One canonical slug per concept. If a page exists, EDIT it.
   - Anti-orphan: when CREATING a new page, the body MUST link to at
-    least one existing page via `[[other-slug]]`. The tool rejects
+    least one existing page via `[[other-slug]]` (use `wiki_list()`
+    first to find a parent page to link to). The tool rejects
     orphans otherwise.
   - Slugs are lowercase kebab-case.
   - The body is YOUR synthesis -- do not paste source content verbatim.
