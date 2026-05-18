@@ -567,6 +567,91 @@ def wiki_search(query: str, limit: int = 10) -> str:
     return "\n".join(f"{slug}: {snippet}" for slug, snippet in matches)
 
 
+@tool
+def wiki_backlinks(slug: str) -> str:
+    """List wiki pages that link to a given page.
+
+    This is the entity-graph view: "which pages mention X". Powered by
+    the `[[other-slug]]` wikilink syntax. Cheap -- no LLM calls, just
+    regex over markdown bodies.
+
+    Use this when:
+      - You want to know what THE WIKI itself has to say about a topic
+        across many pages, not just the canonical page for that topic.
+      - "que paginas hablan de X" / "donde menciono Y".
+      - Before creating a new page on X: see who already mentions X
+        so you can adopt the new page into the existing graph
+        (anti-orphan rule).
+
+    Args:
+        slug: kebab-case page identifier to find backlinks for.
+
+    Returns:
+        Newline-separated list of "<from-slug>" lines, plus any typed
+        links in the form "<from-slug> (relation)" -- e.g.,
+        "alita (uses)" means alita.md has a `[[<this-slug>]] (uses)`.
+        Empty list returns "(no pages link to <slug>)".
+    """
+    from pelops import wiki
+
+    plain = wiki.backlinks(slug)
+    typed = wiki.typed_links(slug)
+    if not plain and not typed:
+        return f"(no pages link to {slug!r})"
+    lines = []
+    # Dedupe: a typed link also appears in plain. Show typed form when
+    # available; plain-only entries appear without a relation.
+    typed_lookup = {from_slug: relation for from_slug, relation in typed}
+    for from_slug in plain:
+        if from_slug in typed_lookup:
+            lines.append(f"{from_slug} ({typed_lookup[from_slug]})")
+        else:
+            lines.append(from_slug)
+    return "\n".join(lines)
+
+
+@tool
+def wiki_graph_stats() -> str:
+    """Summarize the wiki entity graph: top hubs, orphans, total links.
+
+    Use sparingly -- intended for occasional introspection ("am I
+    actually building a connected wiki?"), not for every query. Cheap
+    (one scan, no LLM), but still walks every page.
+
+    Returns:
+        A plain-text summary with: total pages, total links, top 5 most
+        referenced pages (the hubs), and any orphans (pages with zero
+        inbound links).
+    """
+    from pelops import wiki
+
+    graph = wiki.entity_graph()
+    pages = list(graph.keys())
+    if not pages:
+        return "(wiki is empty)"
+    total_links = sum(len(g["inbound_plain"]) + len(g["inbound_typed"]) for g in graph.values())
+    by_count = sorted(
+        pages,
+        key=lambda s: -(len(graph[s]["inbound_plain"]) + len(graph[s]["inbound_typed"])),
+    )
+    top = by_count[:5]
+    orphans = [s for s in pages if not graph[s]["inbound_plain"] and not graph[s]["inbound_typed"]]
+    lines = [
+        f"pages: {len(pages)}, total inbound links: {total_links}",
+        "",
+        "top hubs:",
+    ]
+    for s in top:
+        n = len(graph[s]["inbound_plain"]) + len(graph[s]["inbound_typed"])
+        lines.append(f"  {s} -- {n} inbound")
+    if orphans:
+        lines.append("")
+        lines.append(f"orphans ({len(orphans)}):")
+        for s in orphans:
+            lines.append(f"  {s}")
+    return "\n".join(lines)
+
+
 # Wiki tools -- live in CHAT_TOOLS. The agent reads its own behavior
 # from heartbeat.md via wiki_read, and may write to wiki pages (including
 # heartbeat.md itself, co-editor model). Git in the vault is the safety
@@ -576,6 +661,8 @@ WIKI_TOOLS = [
     wiki_write,
     wiki_list,
     wiki_search,
+    wiki_backlinks,
+    wiki_graph_stats,
 ]
 
 CHAT_TOOLS = [

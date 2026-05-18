@@ -136,6 +136,60 @@ def test_backlinks_excludes_self_references(wiki_dir: Path) -> None:
     assert wiki.backlinks("vstash") == []
 
 
+def test_typed_links_extracts_relations(wiki_dir: Path) -> None:
+    from pelops import wiki
+
+    wiki.write("alita", "First page.")
+    wiki.write("vstash", "vstash is the storage used by [[alita]] (uses).")
+    wiki.write("heartbeat", "heartbeat lives in [[alita]] (part_of) and uses [[vstash]] (reads).")
+    # Plain backlinks include both vstash and heartbeat
+    assert sorted(wiki.backlinks("alita")) == ["heartbeat", "vstash"]
+    # Typed links return (from, relation) pairs
+    typed = wiki.typed_links("alita")
+    assert sorted(typed) == [("heartbeat", "part_of"), ("vstash", "uses")]
+    assert wiki.typed_links("vstash") == [("heartbeat", "reads")]
+
+
+def test_typed_links_ignores_plain_links(wiki_dir: Path) -> None:
+    """A `[[slug]]` without a `(relation)` suffix is NOT a typed link."""
+    from pelops import wiki
+
+    wiki.write("alita", "Origin page.")
+    wiki.write("vstash", "Just a plain [[alita]] reference here.")
+    assert wiki.backlinks("alita") == ["vstash"]
+    assert wiki.typed_links("alita") == []
+
+
+def test_entity_graph_aggregates_all_inbound(wiki_dir: Path) -> None:
+    from pelops import wiki
+
+    wiki.write("alita", "Hub.")
+    wiki.write("vstash", "Storage for [[alita]] (used_by).")
+    wiki.write("heartbeat", "Cron in [[alita]] and notes from [[vstash]].")
+    wiki.write("orphan-page", "I reference nothing relevant. Plain text.")
+    graph = wiki.entity_graph()
+    # alita appears in graph; has 2 plain inbound (vstash, heartbeat),
+    # 1 typed inbound (vstash, used_by)
+    assert sorted(graph["alita"]["inbound_plain"]) == ["heartbeat", "vstash"]
+    assert graph["alita"]["inbound_typed"] == [("vstash", "used_by")]
+    # vstash has 1 plain inbound from heartbeat
+    assert graph["vstash"]["inbound_plain"] == ["heartbeat"]
+    # orphan-page has no inbound from anywhere
+    assert graph["orphan-page"]["inbound_plain"] == []
+    assert graph["orphan-page"]["inbound_typed"] == []
+
+
+def test_entity_graph_single_scan_handles_unknown_targets(wiki_dir: Path) -> None:
+    """Links to nonexistent slugs (`[[ghost]]`) do NOT crash the graph."""
+    from pelops import wiki
+
+    wiki.write("alita", "Hub.")
+    wiki.write("vstash", "Refers to [[ghost]] which doesn't exist.")
+    graph = wiki.entity_graph()
+    assert "ghost" not in graph
+    assert graph["alita"]["inbound_plain"] == []
+
+
 def test_frontmatter_preserves_created_date_on_update(wiki_dir: Path) -> None:
     """Updates must NOT reset the `created` field; only `updated` changes."""
     from pelops import wiki
