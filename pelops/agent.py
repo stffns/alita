@@ -177,7 +177,7 @@ def ask(
     restricted: bool = False,
     source: str = "chat",
     thread_id: str | None = None,
-    recursion_limit: int = 40,
+    recursion_limit: int = 50,
 ) -> str:
     """Synchronous helper for one-shot questions.
 
@@ -187,10 +187,13 @@ def ask(
     of the same kind share state -- normally desirable for cron jobs.
 
     `recursion_limit` caps the number of LangGraph node steps before the
-    graph stops. Default 40 (was 25 = LangGraph's default; bumped after
-    observing multi-page wiki-synthesis queries hit the cap and return
-    `content=''`). Autonomous flows pass higher values (heartbeat: 50)
-    documented at the call site.
+    graph stops. Default 50 (started at LangGraph's default of 25, was
+    bumped to 40 in PR #14, and to 50 here after observing that creating
+    a brand-new wiki page on an unknown topic chains research +
+    wiki_write + INBOUND adoption wiki_write -- 40 was still tight).
+    Heartbeat passes 50 explicitly at the call site, matching this
+    default; future autonomous flows with even longer chains can pass
+    higher.
 
     On every call we check `persona.md` for changes and rebuild the
     cached agent if the file was edited -- this is what makes wiki
