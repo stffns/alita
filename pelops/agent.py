@@ -127,6 +127,40 @@ def build_agent(restricted: bool = False):
     )
 
 
+_last_persona_mtime: float | None = None
+
+
+def _maybe_invalidate_agent_cache() -> None:
+    """Rebuild the cached agent when `persona.md` has changed on disk.
+
+    The agent's system prompt is baked into the graph at construction
+    time, and `build_agent` is `@lru_cache`'d. Without this check,
+    edits to `persona.md` (by Jay in Obsidian, or by Alita herself via
+    `wiki_write`) would not take effect until the bot restarted.
+
+    We track the file's mtime in process memory. When it changes, we
+    clear the lru_cache so the NEXT `build_agent()` call reconstructs
+    the agent with the fresh persona. The check is one stat() per
+    ask() call -- microseconds, no I/O cost worth measuring.
+    """
+    global _last_persona_mtime
+    try:
+        s = Settings.load()
+        persona_path = s.wiki_dir / "persona.md"
+        if not persona_path.exists():
+            return
+        mtime = persona_path.stat().st_mtime
+    except Exception:
+        return
+    if _last_persona_mtime is None:
+        _last_persona_mtime = mtime
+        return
+    if mtime > _last_persona_mtime:
+        _log.info("persona.md mtime changed, rebuilding agent on next call")
+        _last_persona_mtime = mtime
+        build_agent.cache_clear()
+
+
 def ask(
     message: str,
     history: list[dict] | None = None,
@@ -146,7 +180,13 @@ def ask(
     graph stops. Default 25 matches LangGraph's own default. Callers
     that chain many tool calls (e.g., autonomous jobs) should pass a
     higher value; the call site documents the rationale.
+
+    On every call we check `persona.md` for changes and rebuild the
+    cached agent if the file was edited -- this is what makes wiki
+    edits to the persona take effect on the next turn without a
+    restart.
     """
+    _maybe_invalidate_agent_cache()
     agent = build_agent(restricted=restricted)
     messages = list(history or [])
     messages.append({"role": "user", "content": message})
