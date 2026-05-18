@@ -167,17 +167,27 @@ def recent_commits(repo: str, branch: str = "main", limit: int = 10) -> list[dic
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise GitHubReadError(f"gh returned non-JSON: {raw[:200]!r}") from exc
+    # Defensive: gh api should return a list of commit dicts, but a
+    # malformed response or an error body with HTTP 200 could land here.
+    # Reject anything that does not match the expected shape.
+    if not isinstance(data, list):
+        return []
     out = []
     for c in data[:limit]:
+        if not isinstance(c, dict):
+            continue
         commit = c.get("commit") or {}
         author = commit.get("author") or {}
+        # `or "?"` covers the case where the key exists but the value
+        # is explicitly None -- without it, downstream str slicing
+        # like `c['date'][:10]` would TypeError.
         out.append(
             {
                 "sha": (c.get("sha") or "")[:12],
                 "message": (commit.get("message") or "").split("\n", 1)[0][:200],
-                "author": author.get("name", "?"),
-                "date": author.get("date", "?"),
-                "url": c.get("html_url", ""),
+                "author": str(author.get("name") or "?"),
+                "date": str(author.get("date") or "?"),
+                "url": c.get("html_url") or "",
             }
         )
     return out

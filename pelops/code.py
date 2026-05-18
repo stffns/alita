@@ -62,12 +62,14 @@ def search(
         chunk = getattr(r, "chunk", None)
         if chunk is None:
             continue
+        # `or 0` guards against an attribute that exists but is None
+        # (Semble's chunk fields are normally ints, but be defensive).
         out.append(
             {
-                "file": str(getattr(chunk, "file_path", "?")),
-                "start_line": int(getattr(chunk, "start_line", 0)),
-                "end_line": int(getattr(chunk, "end_line", 0)),
-                "snippet": str(getattr(chunk, "content", ""))[:2000],
+                "file": str(getattr(chunk, "file_path", "?") or "?"),
+                "start_line": int(getattr(chunk, "start_line", 0) or 0),
+                "end_line": int(getattr(chunk, "end_line", 0) or 0),
+                "snippet": str(getattr(chunk, "content", "") or "")[:2000],
             }
         )
     return out
