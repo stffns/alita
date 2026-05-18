@@ -8,7 +8,9 @@ Three groups:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 
 import feedparser
 from groq import Groq
@@ -665,6 +667,157 @@ WIKI_TOOLS = [
     wiki_graph_stats,
 ]
 
+
+# ---------- Skill tools (Hermes-style self-improvement) ----------------
+#
+# Alita can author her own skills via `skill_write`. Skills written this
+# way land in `<wiki_dir>/skills/<slug>/SKILL.md` and are auto-discovered
+# at the next agent build by `_discover_skill_sources()` in
+# `pelops/agent.py`. Closes the closed-loop:
+#   recurring task observed -> skill_write -> next ask() rebuilds -> skill loaded.
+#
+# Code-shipped skills in `pelops/skills/` are NOT mutable from here.
+# They are the floor; vault skills extend it.
+
+_SKILL_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
+_SKILL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def _skill_paths() -> tuple[Path, Path | None]:
+    """Return (code_skills_dir, vault_skills_dir_or_None).
+
+    Code dir: `pelops/skills/`. Always present (created when needed).
+    Vault dir: `<wiki_dir>/skills/`. May not exist yet; first
+    `skill_write` creates it.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    code_dir = project_root / "pelops" / "skills"
+    try:
+        vault_dir = Settings.load().wiki_dir / "skills"
+    except Exception:
+        vault_dir = None
+    return code_dir, vault_dir
+
+
+@tool
+def skill_list() -> str:
+    """List all skills available to the agent, from both code and vault.
+
+    Returns lines of `<slug>  (<source>)` where source is `code` (shipped
+    in the python package) or `vault` (Alita-authored, in the wiki).
+    Sorted alphabetically with the source noted so duplicates between
+    code and vault are visible if they happen.
+    """
+    code_dir, vault_dir = _skill_paths()
+    entries: list[tuple[str, str]] = []
+    if code_dir.exists():
+        for d in code_dir.iterdir():
+            if d.is_dir() and (d / "SKILL.md").exists():
+                entries.append((d.name, "code"))
+    if vault_dir and vault_dir.exists():
+        for d in vault_dir.iterdir():
+            if d.is_dir() and (d / "SKILL.md").exists():
+                entries.append((d.name, "vault"))
+    if not entries:
+        return "(no skills found)"
+    entries.sort()
+    return "\n".join(f"{slug}  ({source})" for slug, source in entries)
+
+
+@tool
+def skill_read(slug: str) -> str:
+    """Read a skill's SKILL.md, searching code first then vault.
+
+    Use this before `skill_write`-ing a new skill to match the style of
+    existing ones (frontmatter format, section structure, anti-pattern
+    section, etc).
+
+    Args:
+        slug: kebab-case skill identifier (e.g. "wiki-page-creator").
+
+    Returns:
+        Full SKILL.md content (frontmatter + body), or a clear "not
+        found" message.
+    """
+    if not _SKILL_SLUG_RE.match(slug):
+        return f"Error: invalid slug {slug!r} (must be kebab-case)"
+    code_dir, vault_dir = _skill_paths()
+    # Vault wins for duplicates -- matches the load priority in
+    # _discover_skill_sources(). If Alita refined a code skill in the
+    # vault, that refinement is what reads back here too.
+    for base, label in [(vault_dir, "vault"), (code_dir, "code")]:
+        if base is None:
+            continue
+        path = base / slug / "SKILL.md"
+        if path.exists():
+            return f"[source: {label}]\n\n{path.read_text(encoding='utf-8')}"
+    return f"(no skill named {slug!r} in code or vault)"
+
+
+@tool
+def skill_write(slug: str, body: str) -> str:
+    """Create or update a skill in the vault (NOT the code repo).
+
+    Alita uses this to author new skills when she notices a recurring
+    pattern that would benefit from explicit encoding. The skill lands
+    in `<wiki_dir>/skills/<slug>/SKILL.md` and is auto-discovered at
+    the next agent build (which the persona-from-wiki invalidator
+    triggers on file change).
+
+    The body MUST start with a YAML frontmatter block containing
+    `name:` and `description:` keys -- those are what deepagents'
+    SkillsMiddleware matches against user queries. Without them the
+    skill exists on disk but never auto-loads.
+
+    Args:
+        slug: kebab-case identifier; will become the directory name.
+        body: full SKILL.md content including YAML frontmatter and
+            the markdown body underneath.
+
+    Returns:
+        Path on success, or a clear validation error.
+    """
+    if not _SKILL_SLUG_RE.match(slug):
+        return f"Error: invalid slug {slug!r} (must be kebab-case)"
+    fm_match = _SKILL_FRONTMATTER_RE.match(body)
+    if not fm_match:
+        return (
+            "Error: skill body must START with a YAML frontmatter block "
+            "delimited by `---` lines. Required keys: `name`, "
+            "`description`. Without them, deepagents' SkillsMiddleware "
+            "will not match this skill against any query."
+        )
+    fm = fm_match.group(1)
+    # Anchor to line start so a `name:` appearing INSIDE the
+    # description text does not falsely satisfy the check.
+    if not re.search(r"^name:", fm, re.MULTILINE) or not re.search(
+        r"^description:", fm, re.MULTILINE
+    ):
+        return (
+            "Error: frontmatter must include both `name:` and "
+            "`description:` keys at the start of a line. The "
+            "description is what the agent uses to decide when the "
+            "skill applies."
+        )
+    _, vault_dir = _skill_paths()
+    if vault_dir is None:
+        return "Error: wiki_dir not configured (PELOPS_WIKI_DIR is empty)."
+    skill_dir = vault_dir / slug
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / "SKILL.md"
+    tmp = skill_file.with_suffix(".md.tmp")
+    tmp.write_text(body, encoding="utf-8")
+    tmp.replace(skill_file)
+    return (
+        f"Skill {slug!r} written to {skill_file}. Will be auto-loaded "
+        f"on the next agent rebuild (typically next ask() turn, since "
+        f"the persona-mtime invalidator clears the build_agent cache)."
+    )
+
+
+SKILL_TOOLS = [skill_list, skill_read, skill_write]
+
+
 CHAT_TOOLS = [
     now,
     vstash_recall,
@@ -675,4 +828,5 @@ CHAT_TOOLS = [
     watcher,
     metrics_summary,
     *WIKI_TOOLS,
+    *SKILL_TOOLS,
 ]

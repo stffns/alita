@@ -53,9 +53,33 @@ def _build_model(model_id: str):
 
 
 def _discover_skill_sources() -> list[str]:
-    if not SKILLS_DIR.exists():
-        return []
-    return [str(SKILLS_DIR.relative_to(PROJECT_ROOT))]
+    """Return the list of directories deepagents should scan for skills.
+
+    Priority order: VAULT first, then CODE. The vault wins for
+    duplicate slugs so Alita can refine a code-shipped skill by
+    writing an improved version via `skill_write` -- without that
+    priority, refinements would be shadowed by the original code
+    version, breaking the REFINE workflow documented in the
+    skill-builder skill.
+
+      1. `<wiki_dir>/skills/` -- Alita-authored skills written via the
+         `skill_write` tool. Auto-discovered at agent build time.
+      2. `pelops/skills/` -- code-shipped skills as the floor.
+
+    Both paths are absolute to avoid surprises depending on the
+    process's current working directory. Either path is optional;
+    missing directories are skipped silently.
+    """
+    sources: list[str] = []
+    try:
+        wiki_skills = Settings.load().wiki_dir / "skills"
+    except Exception:
+        wiki_skills = None
+    if wiki_skills is not None and wiki_skills.exists():
+        sources.append(str(wiki_skills.resolve()))
+    if SKILLS_DIR.exists():
+        sources.append(str(SKILLS_DIR.resolve()))
+    return sources
 
 
 def _build_checkpointer():
