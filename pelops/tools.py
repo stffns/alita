@@ -991,6 +991,71 @@ def gh_recent_commits(repo: str, branch: str = "main", limit: int = 10) -> str:
 GITHUB_TOOLS = [gh_pr_list, gh_pr_view, gh_issue_list, gh_issue_view, gh_recent_commits]
 
 
+# ---------- Sandbox code execution (Docker) -----------------------------
+#
+# Per Jay's decision on 2026-05-18: no per-call permission prompt. The
+# sandbox isolation (no network, read-only FS, stripped env, CPU/memory
+# caps -- see `pelops/sandbox.py`) is the safety boundary, so a paranoia
+# layer on top would only add latency. The kill switch is the env var
+# ALITA_SANDBOX_ENABLED -- set to "false" to disable the tool entirely.
+
+
+@tool
+def code_execute(code: str, language: str = "python", timeout_seconds: int = 30) -> str:
+    """Run code in a sandboxed Docker container and return its output.
+
+    The container has NO network, a read-only root filesystem (writable
+    /tmp only), CPU + memory caps, and no host credentials. Each call
+    spins up a fresh container that is destroyed on exit.
+
+    Args:
+        code: source to run. For language='python' it is fed to
+            `python <script>`; for 'bash' it is fed to `sh <script>`.
+        language: 'python' (default) or 'bash'. Python image is
+            stdlib-only (no `pip install`); bash runs on Alpine.
+        timeout_seconds: kill the container after this many seconds.
+            Default 30. Hard cap 300.
+
+    Returns:
+        Multi-line summary: exit code, duration, stdout, stderr.
+        Truncated to a few KB to keep the agent context lean.
+    """
+    from pelops import sandbox
+    from pelops.config import get_settings
+
+    if not getattr(get_settings(), "sandbox_enabled", True):
+        return "Error: sandbox execution is disabled (ALITA_SANDBOX_ENABLED=false)"
+    timeout = max(1, min(int(timeout_seconds), 300))
+    lang = (language or "python").lower()
+    try:
+        if lang == "python":
+            result = sandbox.run_python(code, timeout=timeout)
+        elif lang in {"bash", "sh", "shell"}:
+            result = sandbox.run_bash(code, timeout=timeout)
+        else:
+            return f"Error: unsupported language {language!r} (use 'python' or 'bash')"
+    except sandbox.SandboxError as exc:
+        return f"Error: {exc}"
+    head = (
+        f"exit={result['exit_code']}  "
+        f"duration={result['duration_seconds']}s"
+        f"{'  TIMED_OUT' if result['timed_out'] else ''}"
+    )
+    stdout = result["stdout"].rstrip()
+    stderr = result["stderr"].rstrip()
+    parts = [head]
+    if stdout:
+        parts.append(f"--- stdout ---\n{stdout}")
+    if stderr:
+        parts.append(f"--- stderr ---\n{stderr}")
+    if not stdout and not stderr:
+        parts.append("(no output)")
+    return "\n".join(parts)
+
+
+SANDBOX_TOOLS = [code_execute]
+
+
 CHAT_TOOLS = [
     now,
     vstash_recall,
@@ -1004,4 +1069,5 @@ CHAT_TOOLS = [
     *SKILL_TOOLS,
     *CODE_TOOLS,
     *GITHUB_TOOLS,
+    *SANDBOX_TOOLS,
 ]

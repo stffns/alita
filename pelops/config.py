@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_owner_chat_id: int | None = Field(default=None, alias="TELEGRAM_OWNER_CHAT_ID")
 
+    # ---- Sandbox code execution -------------------------------------- #
+    # Kill switch for the Docker-backed `code_execute` tool. Default
+    # on -- the sandbox isolation is the safety boundary, not a permission
+    # prompt. Set to `false` in the env to disable the tool entirely (the
+    # agent will get an error string back instead of a container run).
+    sandbox_enabled: bool = Field(default=True, alias="ALITA_SANDBOX_ENABLED")
+
     # ---------- validators ---------- #
 
     @field_validator("topics", "rss_feeds", mode="before")
