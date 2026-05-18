@@ -1,0 +1,158 @@
+[
+  {
+    "prompt": {
+      "id": "P1-trivial",
+      "label": "Trivial: tool wired in",
+      "ask": "Usa code_execute para imprimir exactamente la cadena 'PELOPS-SANDBOX-OK'. Reportame el output.",
+      "must_call": "code_execute",
+      "must_contain": "PELOPS-SANDBOX-OK"
+    },
+    "elapsed_s": 12.72,
+    "n_messages": 4,
+    "code_execute_calls": [
+      {
+        "args": {
+          "code": "print('PELOPS-SANDBOX-OK')",
+          "language": "python"
+        },
+        "result": "exit=0  duration=0.23s\n--- stdout ---\nPELOPS-SANDBOX-OK"
+      }
+    ],
+    "final_text": "Hecho. El sandbox ejecut\u00f3 el c\u00f3digo sin problemas:\n\n```\nexit=0  duration=0.23s\n--- stdout ---\nPELOPS-SANDBOX-OK\n```\n\nLa cadena exacta, sin adornos. El sandbox de Python responde.",
+    "tool_called": true,
+    "expected_in_sandbox_output": true,
+    "expected_in_final_answer": true,
+    "messages_trace": [
+      {
+        "type": "HumanMessage",
+        "content": "Usa code_execute para imprimir exactamente la cadena 'PELOPS-SANDBOX-OK'. Reportame el output."
+      },
+      {
+        "type": "AIMessage",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "code_execute",
+            "args": {
+              "code": "print('PELOPS-SANDBOX-OK')",
+              "language": "python"
+            }
+          }
+        ]
+      },
+      {
+        "type": "ToolMessage",
+        "content": "exit=0  duration=0.23s\n--- stdout ---\nPELOPS-SANDBOX-OK",
+        "name": "code_execute"
+      },
+      {
+        "type": "AIMessage",
+        "content": "Hecho. El sandbox ejecut\u00f3 el c\u00f3digo sin problemas:\n\n```\nexit=0  duration=0.23s\n--- stdout ---\nPELOPS-SANDBOX-OK\n```\n\nLa cadena exacta, sin adornos. El sandbox de Python responde."
+      }
+    ]
+  },
+  {
+    "prompt": {
+      "id": "P2-useful",
+      "label": "Useful: reads tool output back",
+      "ask": "Necesito el sha256 hexdigest de la cadena 'pelops-2026-05-18'. Usa code_execute con Python, despues reportame el digest.",
+      "must_call": "code_execute",
+      "must_contain": "4a7e180233de41a280bec340a82c00355f6f2e7039ec0f8cf51a624d16005d30"
+    },
+    "elapsed_s": 6.33,
+    "n_messages": 4,
+    "code_execute_calls": [
+      {
+        "args": {
+          "code": "import hashlib\nprint(hashlib.sha256('pelops-2026-05-18'.encode()).hexdigest())",
+          "language": "python"
+        },
+        "result": "exit=0  duration=0.19s\n--- stdout ---\n4a7e180233de41a280bec340a82c00355f6f2e7039ec0f8cf51a624d16005d30"
+      }
+    ],
+    "final_text": "`4a7e180233de41a280bec340a82c00355f6f2e7039ec0f8cf51a624d16005d30`",
+    "tool_called": true,
+    "expected_in_sandbox_output": true,
+    "expected_in_final_answer": true,
+    "messages_trace": [
+      {
+        "type": "HumanMessage",
+        "content": "Necesito el sha256 hexdigest de la cadena 'pelops-2026-05-18'. Usa code_execute con Python, despues reportame el digest."
+      },
+      {
+        "type": "AIMessage",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "code_execute",
+            "args": {
+              "code": "import hashlib\nprint(hashlib.sha256('pelops-2026-05-18'.encode()).hexdigest())",
+              "language": "python"
+            }
+          }
+        ]
+      },
+      {
+        "type": "ToolMessage",
+        "content": "exit=0  duration=0.19s\n--- stdout ---\n4a7e180233de41a280bec340a82c00355f6f2e7039ec0f8cf51a624d16005d30",
+        "name": "code_execute"
+      },
+      {
+        "type": "AIMessage",
+        "content": "`4a7e180233de41a280bec340a82c00355f6f2e7039ec0f8cf51a624d16005d30`"
+      }
+    ]
+  },
+  {
+    "prompt": {
+      "id": "P3-reasoned",
+      "label": "Reasoned: writes code, runs, interprets",
+      "ask": "Cuantos numeros primos hay menores a 10000? Escribe un Python eficiente y corrirlo con code_execute. Reportame el conteo y cuanto tardo (decimas de segundo estan bien).",
+      "must_call": "code_execute",
+      "must_contain": "1229"
+    },
+    "elapsed_s": 10.55,
+    "n_messages": 4,
+    "code_execute_calls": [
+      {
+        "args": {
+          "code": "import math, time\n\ndef count_primes(n):\n    if n < 2:\n        return 0\n    is_prime = [True] * n\n    is_prime[0] = is_prime[1] = False\n    for i in range(2, int(math.isqrt(n)) + 1):\n        if is_prime[i]:\n            step = i\n            start = i * i\n            is_prime[start:n:step] = [False] * ((n - 1 - start) // step + 1)\n    return sum(is_prime)\n\nstart = time.perf_counter()\ncnt = count_primes(10000)\nelapsed = time.perf_counter() - start\nprint(f\"Primos < 10000: {cnt}\")\nprint(f\"Tiempo: {elapsed*1000:.2f} ms\")\n",
+          "language": "python"
+        },
+        "result": "exit=0  duration=0.17s\n--- stdout ---\nPrimos < 10000: 1229\nTiempo: 0.14 ms"
+      }
+    ],
+    "final_text": "1229 primos menores a 10000, tard\u00f3 0.14 ms \u2014 eso es 140 microsegundos. B\u00e1sicamente una criba de Erat\u00f3stenes est\u00e1ndar con `array[bool]` y slicing para marcar m\u00faltiplos. Ni siquiera alcanza a ser un parpadeo.",
+    "tool_called": true,
+    "expected_in_sandbox_output": true,
+    "expected_in_final_answer": true,
+    "messages_trace": [
+      {
+        "type": "HumanMessage",
+        "content": "Cuantos numeros primos hay menores a 10000? Escribe un Python eficiente y corrirlo con code_execute. Reportame el conteo y cuanto tardo (decimas de segundo estan bien)."
+      },
+      {
+        "type": "AIMessage",
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "code_execute",
+            "args": {
+              "code": "import math, time\n\ndef count_primes(n):\n    if n < 2:\n        return 0\n    is_prime = [True] * n\n    is_prime[0] = is_prime[1] = False\n    for i in range(2, int(math.isqrt(n)) + 1):\n        if is_prime[i]:\n            step = i\n            start = i * i\n            is_prime[start:n:step] = [False] * ((n - 1 - start) // step + 1)\n    return sum(is_prime)\n\nstart = time.perf_counter()\ncnt = count_primes(10000)\nelapsed = time.perf_counter() - start\nprint(f\"Primos < 10000: {cnt}\")\nprint(f\"Tiempo: {elapsed*1000:.2f} ms\")\n",
+              "language": "python"
+            }
+          }
+        ]
+      },
+      {
+        "type": "ToolMessage",
+        "content": "exit=0  duration=0.17s\n--- stdout ---\nPrimos < 10000: 1229\nTiempo: 0.14 ms",
+        "name": "code_execute"
+      },
+      {
+        "type": "AIMessage",
+        "content": "1229 primos menores a 10000, tard\u00f3 0.14 ms \u2014 eso es 140 microsegundos. B\u00e1sicamente una criba de Erat\u00f3stenes est\u00e1ndar con `array[bool]` y slicing para marcar m\u00faltiplos. Ni siquiera alcanza a ser un parpadeo."
+      }
+    ]
+  }
+]
