@@ -41,11 +41,16 @@ def _extract_body_section(page_body: str) -> str:
 
     The wiki page has a short preamble explaining what it is, followed
     by `## Body` containing the actual system prompt. We pass only the
-    body to the model. If `## Body` is not found, fall back to using
-    the whole page (minus the preamble paragraph is fine -- the model
-    handles a little extra context).
+    body to the model. Stop at the next markdown header (any level) so
+    future additions to the wiki page (e.g. `## Changelog`) do not
+    bleed into the system prompt. Case-insensitive on the header label.
+    If `## Body` is not found, fall back to the whole page.
     """
-    m = re.search(r"^##\s*Body\b[^\n]*\n(.*)\Z", page_body, flags=re.MULTILINE | re.DOTALL)
+    m = re.search(
+        r"^##\s*Body\b[^\n]*\n(.*?)(?=\n#|\Z)",
+        page_body,
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
     if m:
         return m.group(1).strip()
     return page_body.strip()
