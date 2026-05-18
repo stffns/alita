@@ -280,6 +280,96 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         await msg.answer(f">> voz: {text}", parse_mode=None)
         await _run_agent_turn(msg, text, source="telegram-voice")
 
+    @dp.message(F.photo)
+    async def on_photo(msg: Message) -> None:
+        """Forward a photo (and any caption) to the multimodal agent.
+
+        DeepSeek v4 (the main chat model) is text-only; we cannot just
+        attach the image to a normal HumanMessage. Instead we package
+        the image as a base64 data URL plus the caption text, hand it
+        to the agent, and rely on the `vision` sub-agent (Gemini Flash)
+        to actually look at it. The persona tells the main agent to
+        call `task("vision", ...)` when the input has an image_url.
+        """
+        if not _owner_only(msg):
+            return
+        # Telegram delivers photos as a list of PhotoSize objects with
+        # progressively larger resolutions. The last one is the highest
+        # quality the sender allowed.
+        if not msg.photo:
+            return
+        photo = msg.photo[-1]
+        size = getattr(photo, "file_size", None) or 0
+        if size > _AUDIO_INLINE_CAP:  # reuse the 20MB inline cap
+            await msg.answer(
+                f"Imagen demasiado grande ({size:,} bytes; cap {_AUDIO_INLINE_CAP:,}).",
+                parse_mode=None,
+            )
+            return
+
+        await bot.send_chat_action(msg.chat.id, "typing")
+        buf = None
+        try:
+            buf = await bot.download(photo)
+            image_bytes = buf.read() if buf is not None else b""
+        except Exception as exc:
+            log.exception("photo download failed")
+            await msg.answer(f"No pude bajar la imagen: {exc}", parse_mode=None)
+            return
+        finally:
+            if buf is not None:
+                try:
+                    buf.close()
+                except Exception:
+                    pass
+
+        import base64
+
+        # Telegram serves photos as JPEG; the data URL signals that
+        # to the multimodal model.
+        data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
+        caption = (msg.caption or "").strip()
+
+        # Hand the agent a multimodal HumanMessage. The persona /
+        # vision sub-agent description tell it to dispatch via
+        # task("vision", ...). The main chat model only sees a text
+        # placeholder; the image goes to the sub-agent.
+        prompt_blocks = [
+            {
+                "type": "text",
+                "text": caption
+                or "Te llego una imagen sin texto. Llama al sub-agente vision para describirla.",
+            },
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+        config = {"configurable": {"thread_id": f"telegram-{msg.chat.id}"}}
+        try:
+            from langchain_core.messages import HumanMessage
+
+            reply = await asyncio.to_thread(
+                lambda: (
+                    agent.invoke(
+                        {"messages": [HumanMessage(content=prompt_blocks)]},
+                        config=config,
+                    )["messages"][-1].content
+                )
+            )
+        except Exception as exc:
+            log.exception("photo agent invoke failed")
+            await msg.answer(f"Algo trono con la imagen: {exc}", parse_mode=None)
+            return
+        reply_text = reply if isinstance(reply, str) else str(reply) if reply else ""
+        for chunk in _split(reply_text or "(empty response)"):
+            await msg.answer(chunk, parse_mode=None)
+
+        from pelops.tools import record_chat_turn
+
+        record_chat_turn(
+            caption or "(imagen sin caption)",
+            reply_text,
+            source="telegram-photo",
+        )
+
     return dp
 
 
