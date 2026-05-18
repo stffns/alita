@@ -81,6 +81,16 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_owner_chat_id: int | None = Field(default=None, alias="TELEGRAM_OWNER_CHAT_ID")
 
+    # ---- Speech-to-text (Deepgram) ----------------------------------- #
+    # When set, Telegram voice notes are transcribed via Deepgram and
+    # fed into the agent as if you had typed the transcript. Unset ->
+    # the bot answers "STT not configured" instead of crashing.
+    deepgram_api_key: SecretStr | None = Field(default=None, alias="DEEPGRAM_API_KEY")
+    deepgram_model: str = Field(default="nova-3", alias="DEEPGRAM_MODEL")
+    # `multi` enables Deepgram's multilingual detection (handles Jay's
+    # ES/EN mix without us having to guess the language up front).
+    deepgram_language: str = Field(default="multi", alias="DEEPGRAM_LANGUAGE")
+
     # ---- Sandbox code execution -------------------------------------- #
     # Kill switch for the Docker-backed `code_execute` tool. Default
     # on -- the sandbox isolation is the safety boundary, not a permission

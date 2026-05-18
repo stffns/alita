@@ -138,19 +138,27 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
             lines.append(f"- `{title}` _{tags}_")
         await msg.answer("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
-    @dp.message(F.text & ~F.text.startswith("/"))
-    async def on_text(msg: Message) -> None:
-        if not _owner_only(msg):
-            return
+    # Cap for inline audio we will accept BEFORE downloading. Telegram
+    # voice notes are ~1MB; legitimate forwarded clips fit under 20MB.
+    # Past this we refuse via `media.file_size` -- avoids pulling a
+    # giant blob into the bot's RAM only to reject it later in stt.
+    _AUDIO_INLINE_CAP = 20 * 1024 * 1024
+
+    async def _run_agent_turn(msg: Message, text: str, source: str = "telegram") -> None:
+        """Shared turn handler: send `text` to the agent, stream reply back.
+
+        Both `on_text` (typed messages) and `on_voice` (transcribed
+        voice notes) end up here. `source` differentiates the two in
+        episodic recall so a future "what did Jay say yesterday?"
+        query can tell voice apart from text.
+        """
         await bot.send_chat_action(msg.chat.id, "typing")
-        # One checkpointer thread per Telegram chat keeps each user's
-        # state isolated (and the conversation resumable across restarts).
         config = {"configurable": {"thread_id": f"telegram-{msg.chat.id}"}}
         try:
             reply = await asyncio.to_thread(
                 lambda: (
                     agent.invoke(
-                        {"messages": [{"role": "user", "content": msg.text}]},
+                        {"messages": [{"role": "user", "content": text}]},
                         config=config,
                     )["messages"][-1].content
                 )
@@ -159,12 +167,96 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
             log.exception("agent invoke failed")
             await msg.answer(f"Algo trono: {exc}", parse_mode=None)
             return
-        for chunk in _split(reply or "(empty response)"):
+        # Defensive: an LLM provider can return a list of content
+        # blocks (multimodal) instead of a string, or the chain can
+        # end on a ToolMessage whose `content` is bytes. Coerce to a
+        # plain string so `_split` (which assumes str) never crashes.
+        reply_text = reply if isinstance(reply, str) else str(reply) if reply else ""
+        for chunk in _split(reply_text or "(empty response)"):
             await msg.answer(chunk, parse_mode=None)
 
         from pelops.tools import record_chat_turn
 
-        record_chat_turn(msg.text or "", reply or "", source="telegram")
+        record_chat_turn(text, reply_text, source=source)
+
+    @dp.message(F.text & ~F.text.startswith("/"))
+    async def on_text(msg: Message) -> None:
+        if not _owner_only(msg):
+            return
+        await _run_agent_turn(msg, msg.text or "")
+
+    @dp.message(F.voice | F.audio)
+    async def on_voice(msg: Message) -> None:
+        """Transcribe a voice note (or forwarded audio) and feed the text to the agent.
+
+        Telegram delivers voice notes as `msg.voice` (OGG/Opus) and
+        forwarded music files as `msg.audio` (varies). Both expose a
+        `file_id`, a `mime_type`, and a `file_size`. We size-check
+        BEFORE downloading, pull the bytes via aiogram's `download`,
+        hand them to Deepgram, echo the transcript back so Jay can
+        confirm what was heard, and then dispatch like a typed message.
+        """
+        if not _owner_only(msg):
+            return
+        # Either voice or audio, never both -- aiogram routes one at
+        # a time. Voice takes precedence semantically.
+        media = msg.voice or msg.audio
+        if media is None:  # defensive: filter matched but attrs vanished
+            return
+
+        # Reject oversized files BEFORE pulling them into RAM -- the
+        # Telegram payload tells us file_size upfront, no reason to
+        # download just to refuse.
+        size = getattr(media, "file_size", None) or 0
+        if size > _AUDIO_INLINE_CAP:
+            await msg.answer(
+                f"Audio demasiado grande ({size:,} bytes; cap {_AUDIO_INLINE_CAP:,}).",
+                parse_mode=None,
+            )
+            return
+
+        # `bot.download(media)` is the aiogram 3.x helper that handles
+        # `get_file` + `download_file` in one call. Returns a BytesIO.
+        # Close it explicitly so the 20MB buffer is freed promptly.
+        buf = None
+        try:
+            buf = await bot.download(media)
+            audio_bytes = buf.read() if buf is not None else b""
+        except Exception as exc:
+            log.exception("voice download failed")
+            await msg.answer(f"No pude bajar el audio: {exc}", parse_mode=None)
+            return
+        finally:
+            if buf is not None:
+                try:
+                    buf.close()
+                except Exception:
+                    pass
+
+        from pelops import stt
+
+        try:
+            result = await stt.transcribe(
+                audio_bytes,
+                mime_type=getattr(media, "mime_type", None) or "audio/ogg",
+            )
+        except stt.SttError as exc:
+            await msg.answer(f"STT: {exc}", parse_mode=None)
+            return
+
+        text = (result.get("text") or "").strip()
+        if not text:
+            await msg.answer(
+                "(no entendi nada; mandalo de nuevo o por texto)",
+                parse_mode=None,
+            )
+            return
+
+        # Echo the transcript so Jay can confirm what was heard BEFORE
+        # the agent responds. Short voice notes can mis-transcribe and
+        # he should see the gap.
+        await msg.answer(f">> voz: {text}", parse_mode=None)
+        await _run_agent_turn(msg, text, source="telegram-voice")
 
     return dp
 
