@@ -175,6 +175,28 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         for chunk in _split(reply_text or "(empty response)"):
             await msg.answer(chunk, parse_mode=None)
 
+        # Symmetric voice reply: if Jay sent a voice note, ALSO send
+        # the answer as audio. Text is sent first (above) so it lands
+        # even if TTS fails -- and so Jay can still skim later. The
+        # cap inside `tts.synthesize` keeps audio replies under ~30s.
+        if source == "telegram-voice" and reply_text:
+            from pelops import tts
+
+            try:
+                audio = await tts.synthesize(reply_text)
+            except tts.TtsError as exc:
+                log.warning("tts failed (continuing with text-only): %s", exc)
+            else:
+                from aiogram.types import BufferedInputFile
+
+                try:
+                    await bot.send_voice(
+                        msg.chat.id,
+                        BufferedInputFile(audio, filename="alita.ogg"),
+                    )
+                except Exception:
+                    log.exception("send_voice failed (text already sent, ignoring)")
+
         from pelops.tools import record_chat_turn
 
         record_chat_turn(text, reply_text, source=source)

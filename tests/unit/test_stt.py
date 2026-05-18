@@ -136,7 +136,15 @@ async def test_transcribe_missing_fields_tolerated(configured, monkeypatch: pyte
 # ---------- configuration / policy ----------------------------------
 
 
-async def test_transcribe_missing_api_key(monkeypatch: pytest.MonkeyPatch):
+async def test_transcribe_missing_api_key(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Without an API key, transcribe must raise BEFORE hitting Deepgram.
+
+    pydantic-settings reads `env_file=".env"` from the project root,
+    so `monkeypatch.delenv` alone is not enough -- the real `.env`
+    in the repo still has DEEPGRAM_API_KEY. chdir into an empty
+    tmp_path so pydantic finds no .env.
+    """
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GROQ_API_KEY", "dummy")
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     from pelops.config import get_settings
