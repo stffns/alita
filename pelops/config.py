@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     # `multi` enables Deepgram's multilingual detection (handles Jay's
     # ES/EN mix without us having to guess the language up front).
     deepgram_language: str = Field(default="multi", alias="DEEPGRAM_LANGUAGE")
+    # Aura voice for TTS replies (when input was a voice note). A
+    # voice id picks BOTH language and voice -- override via env
+    # if the default sounds off or the voice id is unavailable.
+    # Available voices: https://developers.deepgram.com/docs/tts-models
+    deepgram_tts_voice: str = Field(default="aura-2-celeste-es", alias="DEEPGRAM_TTS_VOICE")
 
     # ---- Sandbox code execution -------------------------------------- #
     # Kill switch for the Docker-backed `code_execute` tool. Default
