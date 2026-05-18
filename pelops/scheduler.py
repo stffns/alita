@@ -499,16 +499,16 @@ def job_heartbeat() -> None:
 
     beat_thread = f"heartbeat-{now.strftime('%Y%m%d-%H%M')}"
     try:
-        # recursion_limit=50: heartbeats chain several recall calls + a
-        # potential wiki_write + a final synthesis. The default 25 was
-        # hitting the cap and producing empty content (no final
-        # disposition).
+        # recursion_limit=100: heartbeats chain several recall calls,
+        # potentially a wiki_write, and any sub-agent invocation (deep,
+        # vision, researcher) consumes ~20-30 nodes inside the parent
+        # graph. Matches the `ask()` default since PR for #29.
         answer = ask(
             prompt,
             restricted=True,
             source="heartbeat",
             thread_id=beat_thread,
-            recursion_limit=50,
+            recursion_limit=100,
         )
     except Exception:
         log.exception("heartbeat: agent invoke failed")
