@@ -249,15 +249,18 @@ def job_session_snapshot() -> None:
 
 
 def _latest_per_layer(
-    layer_filters: dict[str, str | None] | None = None,
+    layer_filters: dict[str, str | tuple[str, ...] | None] | None = None,
 ) -> dict[str, datetime | None]:
     """Single scan of vstash that returns the newest `added_at` per layer.
 
-    Pass `{layer: title_prefix_or_None}` mapping. Returns the same keys
-    with either a tz-aware datetime or None. Doing this in one pass
-    avoids the previous N-times full scan (one per layer) -- the
-    heartbeat fires every 15 min and the vault grows, so 6 passes
-    becomes a real cost.
+    Pass `{layer: title_prefix}` mapping. `title_prefix` can be:
+      * None        -- accept any title in this layer
+      * str         -- accept titles starting with this prefix
+      * tuple[str]  -- accept titles starting with ANY of these prefixes
+
+    Returns the same keys with either a tz-aware datetime or None. Doing
+    this in one pass avoids the previous N-times full scan (one per
+    layer) -- the heartbeat fires every 15 min and the vault grows.
 
     All returned datetimes are coerced to UTC-aware so callers can
     subtract from `datetime.now(UTC)` without TypeErrors when an old
@@ -274,9 +277,13 @@ def _latest_per_layer(
         layer = getattr(d, "layer", None)
         if layer not in filters:
             continue
-        title_prefix = filters[layer]
-        if title_prefix and not (getattr(d, "title", "") or "").startswith(title_prefix):
-            continue
+        title_filter = filters[layer]
+        if title_filter:
+            title = getattr(d, "title", "") or ""
+            # str.startswith natively accepts a tuple of prefixes; matches
+            # if title starts with ANY of them.
+            if not title.startswith(title_filter):
+                continue
         ts_str = getattr(d, "added_at", None)
         if not ts_str:
             continue
@@ -396,10 +403,19 @@ def job_heartbeat() -> None:
     now = datetime.now(UTC)
 
     # One full scan across the layers used by guards and prompt signals.
+    # The agent-action filter ONLY matches actions that pushed to Telegram
+    # (`heartbeat_ping_*` from a PING disposition, `heartbeat_surface_*`
+    # from a surface_thought marker the agent saves alongside its PING).
+    # Silent actions (`heartbeat_done_*`, `heartbeat_self-edit_*`,
+    # `heartbeat_consolidate_*`) DO NOT extend the cooldown -- they are
+    # invisible to {owner} and should not block subsequent pings.
     latest = _latest_per_layer(
         {
             "episodic": None,
-            "agent-action": "action_heartbeat_",
+            "agent-action": (
+                "action_heartbeat_ping_",
+                "action_heartbeat_surface_",
+            ),
             "rss": None,
             "research": None,
             "consolidated": None,
@@ -416,7 +432,7 @@ def job_heartbeat() -> None:
     last_push = latest["agent-action"]
     if last_push is not None and (now - last_push) < timedelta(hours=2):
         mins = int((now - last_push).total_seconds() / 60)
-        log.info("heartbeat: pushed %dmin ago, HEARTBEAT_OK", mins)
+        log.info("heartbeat: pushed (to Telegram) %dmin ago, HEARTBEAT_OK", mins)
         return
 
     checks = _load_heartbeat_checks()
