@@ -198,13 +198,12 @@ async def on_message(message: cl.Message) -> None:
             if token:
                 await response.stream_token(token)
                 final_text += token
-        elif kind == "on_tool_start":
-            name = event["name"]
-            await cl.Message(
-                author="Pelops",
-                content=f"`tool` {name} ...",
-                parent_id=response.id,
-            ).send()
+        # Note: we used to surface `on_tool_start` as a `tool <name> ...`
+        # message under the reply. Jay flagged 2026-05-18 that it just
+        # clutters the chat -- ten "tool glob ..." / "tool ls ..." lines
+        # appearing under a single reply add noise without context.
+        # The full tool trace is still available in LangSmith for
+        # debugging; the UI shows only the final prose.
 
     await response.send()
 
