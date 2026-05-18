@@ -97,12 +97,17 @@ def _extract_code_execute_calls(messages: list) -> list[dict]:
                 ),
                 None,
             )
-            calls.append(
-                {
-                    "args": tc.get("args", {}),
-                    "result": (getattr(tool_msg, "content", "") or "")[:2000],
-                }
-            )
+            # `tool_msg is None` is legitimate: a recursion-limit hit or an
+            # interrupted invocation can leave a tool_call orphaned without
+            # its corresponding ToolMessage. Treat that as an empty result
+            # so the pass-criteria reflect what actually happened, instead
+            # of fabricating a "success" from a missing observation.
+            if tool_msg is None:
+                result = "(no tool response: chain stopped before observation)"
+            else:
+                content = getattr(tool_msg, "content", "") or ""
+                result = content[:2000] if isinstance(content, str) else str(content)[:2000]
+            calls.append({"args": tc.get("args", {}), "result": result})
     return calls
 
 
@@ -262,6 +267,10 @@ def main() -> int:
 
     report = render_report(runs)
     out_path = Path(__file__).parent / "runs" / f"sandbox_e2e_{datetime.now(UTC):%Y-%m-%dT%H%M}Z.md"
+    # The runs/ dir is committed in this repo, but a fresh clone OR a
+    # future relocation of the script must not crash the experiment
+    # on a missing parent.
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(report, encoding="utf-8")
     raw_path = out_path.with_suffix(".json")
     raw_path.write_text(
