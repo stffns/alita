@@ -8,11 +8,11 @@ from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from langchain.chat_models import init_chat_model
 
 from pelops.callbacks import MetricsCallback
 from pelops.config import Settings
 from pelops.middleware import PROSE_SUMMARY_PROMPT, LoggingSummarization
+from pelops.models import build_model
 from pelops.persona import system_prompt
 from pelops.subagents import SUBAGENTS
 from pelops.tools import CHAT_TOOLS
@@ -23,33 +23,11 @@ SKILLS_DIR = PROJECT_ROOT / "pelops" / "skills"
 _log = logging.getLogger("pelops.agent")
 
 
-def _build_model(model_id: str):
-    """Build a chat model from a provider:model string.
-
-    Supported prefixes:
-      groq:<model>           -- routed by init_chat_model
-      openrouter:<model>     -- ChatOpenAI against openrouter.ai
-      <anything else>        -- init_chat_model fallback (provider auto-detect)
-    """
-    import os
-
-    temperature = 0.1
-    if model_id.startswith("openrouter:"):
-        from langchain_openai import ChatOpenAI
-        from pydantic import SecretStr
-
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "PELOPS_CHAT_MODEL uses openrouter: prefix but OPENROUTER_API_KEY is not set."
-            )
-        return ChatOpenAI(
-            model=model_id.split(":", 1)[1],
-            api_key=SecretStr(api_key),
-            base_url="https://openrouter.ai/api/v1",
-            temperature=temperature,
-        )
-    return init_chat_model(model=model_id, temperature=temperature)
+# `_build_model` was moved to `pelops.models.build_model` so the
+# `pelops.subagents` module can import it without a circular import
+# back to this file (see `pelops/models.py`). Keep the old name as a
+# thin alias in case anything outside the package still references it.
+_build_model = build_model
 
 
 def _discover_skill_sources() -> list[str]:
