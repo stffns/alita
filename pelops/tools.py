@@ -818,6 +818,179 @@ def skill_write(slug: str, body: str) -> str:
 SKILL_TOOLS = [skill_list, skill_read, skill_write]
 
 
+# ---------- Code search (Semble) ----------------------------------------
+
+
+@tool
+def code_search(query: str, repo: str | None = None, top_k: int = 5) -> str:
+    """Search code by intent using Semble (~98% fewer tokens than grep).
+
+    Returns ranked snippets with file path and line range. Use this
+    instead of `grep` + `wiki_read` when the question is "where does
+    the code do X" or "find me the implementation of Y". Cheap (CPU
+    only, ~1.5ms per query after indexing).
+
+    Args:
+        query: natural-language description of the code you're looking
+            for, e.g. "save model to disk", "where heartbeat parses
+            markdown", "anti-orphan rule".
+        repo: absolute path to the repo. Defaults to the stilt repo
+            (the project this agent ships with). Pass another path
+            when you want to search a different codebase.
+        top_k: max snippets to return. Default 5; raise to 10 for
+            broader exploration.
+
+    Returns:
+        Formatted snippets: each entry is "<file>:<start>-<end>" on
+        one line, followed by the code. Empty result returns
+        "(no matches)".
+    """
+    from pelops import code as code_mod
+
+    try:
+        results = code_mod.search(query, repo=repo, top_k=top_k)
+    except Exception as exc:
+        return f"Error: {exc}"
+    if not results:
+        return "(no matches)"
+    out = []
+    for r in results:
+        loc = f"{r['file']}:{r['start_line']}-{r['end_line']}"
+        out.append(f"=== {loc} ===\n{r['snippet']}")
+    return "\n\n".join(out)
+
+
+CODE_TOOLS = [code_search]
+
+
+# ---------- GitHub (read-only) ------------------------------------------
+#
+# Deliberately READ-only. Any write capability (PR creation, commenting,
+# branch push) lives in its own future module behind explicit
+# authorization. See `docs/design/sandbox-execution.md` for the broader
+# plan around write access and code execution.
+
+
+@tool
+def gh_pr_list(repo: str, state: str = "open", limit: int = 10) -> str:
+    """List pull requests on a GitHub repository.
+
+    Args:
+        repo: 'owner/name' (e.g. 'stffns/alita').
+        state: 'open', 'closed', 'merged', or 'all'. Default 'open'.
+        limit: max PRs to return.
+
+    Returns:
+        One PR per line: "#<number> [<state>] <title> -- <author> (<url>)".
+        Empty list returns "(no PRs)".
+    """
+    from pelops import github_read
+
+    try:
+        prs = github_read.pr_list(repo, state=state, limit=limit)
+    except github_read.GitHubReadError as exc:
+        return f"Error: {exc}"
+    if not prs:
+        return "(no PRs)"
+    return "\n".join(
+        f"#{p['number']} [{p.get('state', '?')}] {p.get('title', '?')} -- "
+        f"{(p.get('author') or {}).get('login', '?')} ({p.get('url', '')})"
+        for p in prs
+    )
+
+
+@tool
+def gh_pr_view(repo: str, number: int) -> str:
+    """Fetch one PR with body, author, line counts, comments summary."""
+    from pelops import github_read
+
+    try:
+        pr = github_read.pr_view(repo, number)
+    except github_read.GitHubReadError as exc:
+        return f"Error: {exc}"
+    author = (pr.get("author") or {}).get("login", "?")
+    body = (pr.get("body") or "").strip()[:1500]
+    n_comments = len(pr.get("comments") or [])
+    return (
+        f"#{pr.get('number')} [{pr.get('state')}] {pr.get('title')}\n"
+        f"author: {author}  created: {pr.get('createdAt')}  merged: {pr.get('mergedAt')}\n"
+        f"changes: +{pr.get('additions', 0)} -{pr.get('deletions', 0)} "
+        f"across {pr.get('changedFiles', 0)} files\n"
+        f"comments: {n_comments}\n"
+        f"url: {pr.get('url')}\n\n"
+        f"--- body ---\n{body}"
+    )
+
+
+@tool
+def gh_issue_list(repo: str, state: str = "open", limit: int = 10) -> str:
+    """List issues on a GitHub repository.
+
+    Args:
+        repo: 'owner/name'.
+        state: 'open', 'closed', or 'all'. Default 'open'.
+        limit: max issues.
+    """
+    from pelops import github_read
+
+    try:
+        issues = github_read.issue_list(repo, state=state, limit=limit)
+    except github_read.GitHubReadError as exc:
+        return f"Error: {exc}"
+    if not issues:
+        return "(no issues)"
+    lines = []
+    for i in issues:
+        labels = ", ".join(label.get("name", "") for label in (i.get("labels") or []))
+        author = (i.get("author") or {}).get("login", "?")
+        lines.append(
+            f"#{i.get('number')} [{i.get('state', '?')}] {i.get('title', '?')} -- "
+            f"{author}  labels=[{labels}]  ({i.get('url', '')})"
+        )
+    return "\n".join(lines)
+
+
+@tool
+def gh_issue_view(repo: str, number: int) -> str:
+    """Fetch one issue with body + comments summary."""
+    from pelops import github_read
+
+    try:
+        iss = github_read.issue_view(repo, number)
+    except github_read.GitHubReadError as exc:
+        return f"Error: {exc}"
+    author = (iss.get("author") or {}).get("login", "?")
+    labels = ", ".join(label.get("name", "") for label in (iss.get("labels") or []))
+    body = (iss.get("body") or "").strip()[:1500]
+    n_comments = len(iss.get("comments") or [])
+    return (
+        f"#{iss.get('number')} [{iss.get('state')}] {iss.get('title')}\n"
+        f"author: {author}  created: {iss.get('createdAt')}  labels=[{labels}]\n"
+        f"comments: {n_comments}\n"
+        f"url: {iss.get('url')}\n\n"
+        f"--- body ---\n{body}"
+    )
+
+
+@tool
+def gh_recent_commits(repo: str, branch: str = "main", limit: int = 10) -> str:
+    """Recent commits on a branch."""
+    from pelops import github_read
+
+    try:
+        commits = github_read.recent_commits(repo, branch=branch, limit=limit)
+    except github_read.GitHubReadError as exc:
+        return f"Error: {exc}"
+    if not commits:
+        return "(no commits)"
+    return "\n".join(
+        f"{c['sha']}  {c['date'][:10]}  {c['author']:<20s}  {c['message']}" for c in commits
+    )
+
+
+GITHUB_TOOLS = [gh_pr_list, gh_pr_view, gh_issue_list, gh_issue_view, gh_recent_commits]
+
+
 CHAT_TOOLS = [
     now,
     vstash_recall,
@@ -829,4 +1002,6 @@ CHAT_TOOLS = [
     metrics_summary,
     *WIKI_TOOLS,
     *SKILL_TOOLS,
+    *CODE_TOOLS,
+    *GITHUB_TOOLS,
 ]
