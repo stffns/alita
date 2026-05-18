@@ -136,6 +136,66 @@ def test_backlinks_excludes_self_references(wiki_dir: Path) -> None:
     assert wiki.backlinks("vstash") == []
 
 
+def test_typed_links_extracts_relations(wiki_dir: Path) -> None:
+    from pelops import wiki
+
+    wiki.write("alita", "First page.")
+    wiki.write("vstash", "vstash is the storage used by [[alita]] (uses).")
+    wiki.write("heartbeat", "heartbeat lives in [[alita]] (part_of) and uses [[vstash]] (reads).")
+    # Plain backlinks include both vstash and heartbeat
+    assert sorted(wiki.backlinks("alita")) == ["heartbeat", "vstash"]
+    # Typed links return (from, relation) pairs
+    typed = wiki.typed_links("alita")
+    assert sorted(typed) == [("heartbeat", "part_of"), ("vstash", "uses")]
+    assert wiki.typed_links("vstash") == [("heartbeat", "reads")]
+
+
+def test_typed_links_ignores_plain_links(wiki_dir: Path) -> None:
+    """A `[[slug]]` without a `(relation)` suffix is NOT a typed link."""
+    from pelops import wiki
+
+    wiki.write("alita", "Origin page.")
+    wiki.write("vstash", "Just a plain [[alita]] reference here.")
+    assert wiki.backlinks("alita") == ["vstash"]
+    assert wiki.typed_links("alita") == []
+
+
+def test_entity_graph_aggregates_all_inbound(wiki_dir: Path) -> None:
+    from pelops import wiki
+
+    wiki.write("alita", "Hub.")
+    wiki.write("vstash", "Storage for [[alita]] (used_by).")
+    wiki.write("heartbeat", "Cron in [[alita]] and notes from [[vstash]].")
+    # "graph-orphan" has an OUTBOUND link (anti-orphan passes) but NO
+    # inbound -- this is what the entity-graph calls an orphan.
+    wiki.write("graph-orphan", "I reference [[alita]] but nothing references me back.")
+    graph = wiki.entity_graph()
+    # alita has 3 plain inbound (vstash, heartbeat, graph-orphan).
+    # The typed form `[[alita]] (used_by)` ALSO contributes to
+    # inbound_plain because BACKLINK_RE catches the inner `[[alita]]`.
+    assert sorted(graph["alita"]["inbound_plain"]) == ["graph-orphan", "heartbeat", "vstash"]
+    assert graph["alita"]["inbound_typed"] == [("vstash", "used_by")]
+    # vstash has 1 plain inbound from heartbeat
+    assert graph["vstash"]["inbound_plain"] == ["heartbeat"]
+    # graph-orphan has no inbound from anywhere
+    assert graph["graph-orphan"]["inbound_plain"] == []
+    assert graph["graph-orphan"]["inbound_typed"] == []
+
+
+def test_entity_graph_single_scan_handles_unknown_targets(wiki_dir: Path) -> None:
+    """Links to nonexistent slugs (`[[ghost]]`) do NOT crash the graph."""
+    from pelops import wiki
+
+    wiki.write("alita", "Hub.")
+    # vstash links to both an existing page (alita, to pass anti-orphan)
+    # AND a nonexistent slug (ghost). The graph should silently skip ghost.
+    wiki.write("vstash", "Refers to [[ghost]] (does not exist) and [[alita]].")
+    graph = wiki.entity_graph()
+    assert "ghost" not in graph
+    # alita gets the inbound from vstash; ghost is ignored gracefully.
+    assert graph["alita"]["inbound_plain"] == ["vstash"]
+
+
 def test_frontmatter_preserves_created_date_on_update(wiki_dir: Path) -> None:
     """Updates must NOT reset the `created` field; only `updated` changes."""
     from pelops import wiki

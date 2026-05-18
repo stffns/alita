@@ -27,6 +27,10 @@ from pelops.config import Settings
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 BACKLINK_RE = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]")
+# Typed-link variant inspired by gbrain. `[[slug]] (relation)` parses as
+# (slug, relation). Plain `[[slug]]` is still matched by BACKLINK_RE and
+# does NOT match here. Relation is kebab/snake-case identifier.
+TYPED_LINK_RE = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]\s*\(([a-z][a-z0-9_-]*)\)")
 
 
 class WikiError(ValueError):
@@ -203,3 +207,54 @@ def backlinks(slug: str) -> list[str]:
         if slug in BACKLINK_RE.findall(page.body):
             out.append(other)
     return out
+
+
+def typed_links(slug: str) -> list[tuple[str, str]]:
+    """Return (from_slug, relation) tuples for pages that link to `slug`
+    via the typed-link syntax `[[slug]] (relation)`. Self-links excluded.
+
+    Plain `[[slug]]` links do NOT appear here -- use `backlinks()` for
+    untyped references. The two together give the full entity graph.
+    """
+    out: list[tuple[str, str]] = []
+    for other in list_pages():
+        if other == slug:
+            continue
+        page = read(other)
+        if page is None:
+            continue
+        for target, relation in TYPED_LINK_RE.findall(page.body):
+            if target == slug:
+                out.append((other, relation))
+    return out
+
+
+def entity_graph() -> dict[str, dict[str, list[str]]]:
+    """Build the full entity graph in one pass.
+
+    Returns `{slug: {'inbound_plain': [...], 'inbound_typed': [(from, rel), ...]}}`
+    so a caller can introspect the whole vault structure without N
+    walks. Useful for `wiki_graph_stats` and offline audits.
+
+    Single scan of all pages. O(pages). No LLM calls (gbrain-style).
+    """
+    pages = list_pages()
+    graph: dict[str, dict[str, list]] = {
+        s: {"inbound_plain": [], "inbound_typed": []} for s in pages
+    }
+    for from_slug in pages:
+        page = read(from_slug)
+        if page is None:
+            continue
+        body = page.body
+        # Untyped backlinks
+        for target in BACKLINK_RE.findall(body):
+            if target == from_slug or target not in graph:
+                continue
+            graph[target]["inbound_plain"].append(from_slug)
+        # Typed backlinks (also matched by BACKLINK_RE; dedupe in caller)
+        for target, relation in TYPED_LINK_RE.findall(body):
+            if target == from_slug or target not in graph:
+                continue
+            graph[target]["inbound_typed"].append((from_slug, relation))
+    return graph
