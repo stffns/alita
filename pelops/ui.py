@@ -184,6 +184,15 @@ async def on_message(message: cl.Message) -> None:
     ):
         kind = event["event"]
         if kind == "on_chat_model_stream":
+            # SummarizationMiddleware invokes the chat model with a
+            # `lc_source=summarization` metadata tag when it compresses
+            # old turns. Without this filter Chainlit happily streams
+            # the summary tokens to the user, who sees an internal
+            # third-person monologue ("The user is trying to...") mixed
+            # in with Alita's actual reply. Bug surfaced 2026-05-18.
+            md = event.get("metadata") or {}
+            if md.get("lc_source") == "summarization":
+                continue
             chunk = event["data"]["chunk"]
             token = getattr(chunk, "content", "") or ""
             if token:
