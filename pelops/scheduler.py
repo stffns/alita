@@ -280,10 +280,9 @@ def _latest_per_layer(
         title_filter = filters[layer]
         if title_filter:
             title = getattr(d, "title", "") or ""
-            if isinstance(title_filter, tuple):
-                if not any(title.startswith(p) for p in title_filter):
-                    continue
-            elif not title.startswith(title_filter):
+            # str.startswith natively accepts a tuple of prefixes; matches
+            # if title starts with ANY of them.
+            if not title.startswith(title_filter):
                 continue
         ts_str = getattr(d, "added_at", None)
         if not ts_str:
