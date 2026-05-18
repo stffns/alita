@@ -1,10 +1,28 @@
 # Design: sandbox code execution for Alita
 
-Status: design only, not implemented.
+Status: shipped (v1, 2026-05-18). See `pelops/sandbox.py` and the
+`code_execute` tool in `pelops/tools.py`.
 Owner: Jay.
 Date: 2026-05-18.
 Companion to PR feature/code-search-and-github-read (Semble + gh
 read tools, the layers BELOW this one).
+
+## What shipped (v1)
+
+  - `pelops/sandbox.py` -- `run_python` + `run_bash` via `docker run`.
+    Image defaults: `python:3.11-slim`, `alpine:3.20`.
+  - `code_execute(code, language, timeout_seconds)` tool registered
+    in `CHAT_TOOLS`.
+  - Env kill switch `ALITA_SANDBOX_ENABLED` (default `true`).
+  - Tests in `tests/unit/test_sandbox.py` -- hermetic via subprocess
+    mock; one integration test gated by a live-daemon skipif.
+
+Deviation from the original plan below: there is NO per-call
+authorization prompt. Jay opted out on 2026-05-18 -- the sandbox
+isolation (no network, read-only FS, stripped env, CPU/memory caps)
+is the safety boundary, and a question-before-each-run layer would
+just add latency without adding security. The kill switch covers the
+"turn it off entirely" case.
 
 ## Why this exists
 
@@ -137,16 +155,23 @@ a clean slate.
   5. **Resource cleanup.** A `--rm --stop-timeout 5` so containers
      do not pile up.
 
-## Authorization flow
+## Authorization flow (REVISED 2026-05-18)
 
-For v1, execution is gated by an explicit user message: Jay says
-"OK, run that" and Alita executes. The agent does NOT decide to
-execute autonomously without a human go-ahead -- this is a
-deliberate guardrail.
+Original plan: per-call permission gate ("Jay says OK, run that").
+Revised before v1 ship: the sandbox is the authorization. Alita
+can execute autonomously inside the container. Rationale:
 
-Once the loop is stable for a few weeks, we revisit: a `safe`
-allowlist of small commands (run tests, check syntax, validate a
-YAML) might be okay to run without asking.
+  - The container has no network, no host FS write access, no host
+    credentials, and CPU/memory caps. The worst it can do is burn
+    a few CPU-seconds and write garbage to a tmpfs that vanishes.
+  - A per-call yes/no makes execution slow and chatty -- the agent
+    cannot use it inside a heartbeat or in a multi-step workflow
+    without bouncing every turn to the user.
+  - The kill switch (`ALITA_SANDBOX_ENABLED=false`) is the
+    blunt-force off button if anything goes wrong.
+
+If the threat model changes (e.g., we add network or host mounts),
+revisit this decision before the change ships.
 
 ## Implementation outline (when we ship v1)
 
@@ -168,12 +193,21 @@ YAML) might be okay to run without asking.
      and a few common stdlib things pre-installed -- saves 30s of
      cold-start `pip install`.
 
-## What we ship in this PR
+## What shipped in PR feature/sandbox-execution
 
-Just the design doc you are reading. The plumbing comes later, when
-we hit a use case that demands it. Going forward by writing code
-without a use case in mind is the over-engineering trap that this
-project has stayed clear of.
+  - `pelops/sandbox.py` -- subprocess wrapper around `docker run`.
+  - `code_execute` tool with `language`, `timeout_seconds` args.
+  - `ALITA_SANDBOX_ENABLED` env switch in `pelops/config.py`.
+  - Unit tests (mocked subprocess) + one integration test (skip if
+    daemon not reachable).
+  - This doc updated to mark v1 as shipped.
+
+What did NOT ship and remains future work:
+
+  - `code_session_reset` tool (no persistent workdir in v1).
+  - Custom base image with ruff/pytest/etc pre-installed (the
+    container has stdlib only).
+  - Per-session workdir mount (each call is independent).
 
 ## Open questions (defer until v1)
 
