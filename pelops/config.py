@@ -88,9 +88,19 @@ class Settings(BaseSettings):
     # agent will get an error string back instead of a container run).
     sandbox_enabled: bool = Field(default=True, alias="ALITA_SANDBOX_ENABLED")
 
+    # ---- Host filesystem write allowlist ----------------------------- #
+    # Directories the `host_write_file` tool may write under. Default
+    # covers the directories Jay actually reaches for ("save it to my
+    # Desktop"). Set ALITA_HOST_WRITE_DIRS=dir1,dir2,... to override.
+    # See `pelops/host_fs.py` for the resolution / safety contract.
+    host_write_dirs: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["~/Desktop", "~/Documents", "~/Downloads"],
+        alias="ALITA_HOST_WRITE_DIRS",
+    )
+
     # ---------- validators ---------- #
 
-    @field_validator("topics", "rss_feeds", mode="before")
+    @field_validator("topics", "rss_feeds", "host_write_dirs", mode="before")
     @classmethod
     def _split_csv(cls, v):
         if isinstance(v, str):
