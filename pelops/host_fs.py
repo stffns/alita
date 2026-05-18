@@ -65,8 +65,18 @@ def _allowed_roots() -> list[Path]:
     return roots
 
 
-def _validate(path: str) -> Path:
-    """Return the resolved Path if writing `path` is allowed, else raise."""
+def _validate(path: str, *, must_be_inside_root: bool = False) -> Path:
+    """Return the resolved Path if `path` is allowed, else raise.
+
+    Args:
+        path: User-supplied path (absolute or `~`-prefixed).
+        must_be_inside_root: When True, the path itself (not just its
+            parent) must be under an allowed root. Used by `ls` and
+            `read` where there is no "creating a new sibling" notion.
+            Default False matches `write` semantics: the parent must
+            be inside an allowed root so a new file inside it lands
+            correctly.
+    """
     if not path or not path.strip():
         raise HostFsError("empty path")
     # Reject traversal tokens in the RAW input, before expansion.
@@ -92,15 +102,18 @@ def _validate(path: str) -> Path:
     roots = _allowed_roots()
     if not roots:
         raise HostFsError(
-            "no host-write directories configured. Set ALITA_HOST_WRITE_DIRS "
+            "no host directories configured. Set ALITA_HOST_WRITE_DIRS "
             "or rely on the defaults (~/Desktop, ~/Documents, ~/Downloads -- "
             "at least one must exist)."
         )
 
-    parent = resolved.parent
+    # `write` allows targeting a NEW file inside an allowed root, so we
+    # check the parent. `read` / `ls` operate on an EXISTING entry, so
+    # the entry itself must be under (or equal to) a root.
+    check = resolved if must_be_inside_root else resolved.parent
     for root in roots:
         try:
-            parent.relative_to(root)
+            check.relative_to(root)
             return resolved
         except ValueError:
             continue
@@ -130,6 +143,14 @@ def write(path: str, content: str) -> Path:
         raise HostFsError(
             f"refused to overwrite non-regular file at {resolved} (symlink, dir, or special node)."
         )
+    # Capture the existing mode (if any) so we can restore it after the
+    # atomic rename. `tempfile.mkstemp` creates the temp file at 0600;
+    # without this, `os.replace` would SILENTLY downgrade the perms of
+    # an existing 0644 file to 0600 on every overwrite -- bug Jay caught
+    # 2026-05-18 with metricas-pelops.html landing at rw-------.
+    existing_mode: int | None = None
+    if resolved.exists() and resolved.is_file():
+        existing_mode = resolved.stat().st_mode & 0o7777
     resolved.parent.mkdir(parents=True, exist_ok=True)
 
     # Atomic write: write to a sibling tmp file, fsync, then rename.
@@ -146,9 +167,91 @@ def write(path: str, content: str) -> Path:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
+        # Set the mode BEFORE rename so the destination never appears
+        # at the more-restrictive 0600. New files default to 0644
+        # (rw-r--r--), the conventional mode for user docs on macOS.
+        os.chmod(tmp_path, existing_mode if existing_mode is not None else 0o644)
         os.replace(tmp_path, resolved)
         _log.info("host_fs: wrote %d chars to %s", len(content), resolved)
         return resolved
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+# Cap on the body returned by `read` -- the agent context cannot
+# absorb arbitrarily large files cheaply. Past this, the response is
+# truncated with a marker so the agent knows there is more.
+_READ_BYTE_CAP = 200_000
+
+
+def read(path: str) -> str:
+    """Read `path` from the host filesystem.
+
+    Args:
+        path: Absolute path (or `~`-prefixed) of the file to read.
+
+    Returns:
+        File contents as UTF-8 (errors='replace'). If the file is
+        larger than `_READ_BYTE_CAP`, the result is truncated and a
+        single line appended marking the cut.
+
+    Raises:
+        HostFsError: path policy violation OR target is not a regular
+            file (does not exist, is a directory, etc).
+    """
+    resolved = _validate(path, must_be_inside_root=True)
+    if not resolved.exists():
+        raise HostFsError(f"not found: {resolved}")
+    if not resolved.is_file():
+        raise HostFsError(f"not a regular file: {resolved}")
+    raw = resolved.read_bytes()
+    if len(raw) <= _READ_BYTE_CAP:
+        return raw.decode("utf-8", errors="replace")
+    head = raw[:_READ_BYTE_CAP].decode("utf-8", errors="replace")
+    return (
+        f"{head}\n\n... [truncated: showed first {_READ_BYTE_CAP} of "
+        f"{len(raw)} bytes; re-read with a code_execute snippet if "
+        f"you need a specific range]"
+    )
+
+
+def ls(path: str) -> list[dict]:
+    """List the entries of a directory on the host filesystem.
+
+    Args:
+        path: Absolute path (or `~`-prefixed) of the directory.
+
+    Returns:
+        A list of dicts: `{name, type, size}`. `type` is one of
+        `"file"`, `"dir"`, `"link"`, or `"other"`. `size` is bytes
+        for regular files, `None` otherwise. Order: directories
+        first, then files, both alphabetical.
+
+    Raises:
+        HostFsError: path policy violation OR target is not a directory.
+    """
+    resolved = _validate(path, must_be_inside_root=True)
+    if not resolved.exists():
+        raise HostFsError(f"not found: {resolved}")
+    if not resolved.is_dir():
+        raise HostFsError(f"not a directory: {resolved}")
+
+    entries: list[dict] = []
+    for child in resolved.iterdir():
+        if child.is_symlink():
+            kind = "link"
+        elif child.is_dir():
+            kind = "dir"
+        elif child.is_file():
+            kind = "file"
+        else:
+            kind = "other"
+        size: int | None
+        try:
+            size = child.stat().st_size if kind == "file" else None
+        except OSError:
+            size = None
+        entries.append({"name": child.name, "type": kind, "size": size})
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+    return entries
