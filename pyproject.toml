@@ -38,6 +38,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "langgraph-checkpoint-sqlite>=2.0",
     "aiosqlite>=0.20",
+    "semble>=0.1.8",
 ]
 
 [project.scripts]
