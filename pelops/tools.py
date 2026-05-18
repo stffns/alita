@@ -690,9 +690,7 @@ def _skill_paths() -> tuple[Path, Path | None]:
     Vault dir: `<wiki_dir>/skills/`. May not exist yet; first
     `skill_write` creates it.
     """
-    from pathlib import Path as _P
-
-    project_root = _P(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     code_dir = project_root / "pelops" / "skills"
     try:
         vault_dir = Settings.load().wiki_dir / "skills"
@@ -744,7 +742,10 @@ def skill_read(slug: str) -> str:
     if not _SKILL_SLUG_RE.match(slug):
         return f"Error: invalid slug {slug!r} (must be kebab-case)"
     code_dir, vault_dir = _skill_paths()
-    for base, label in [(code_dir, "code"), (vault_dir, "vault")]:
+    # Vault wins for duplicates -- matches the load priority in
+    # _discover_skill_sources(). If Alita refined a code skill in the
+    # vault, that refinement is what reads back here too.
+    for base, label in [(vault_dir, "vault"), (code_dir, "code")]:
         if base is None:
             continue
         path = base / slug / "SKILL.md"
@@ -787,11 +788,16 @@ def skill_write(slug: str, body: str) -> str:
             "will not match this skill against any query."
         )
     fm = fm_match.group(1)
-    if "name:" not in fm or "description:" not in fm:
+    # Anchor to line start so a `name:` appearing INSIDE the
+    # description text does not falsely satisfy the check.
+    if not re.search(r"^name:", fm, re.MULTILINE) or not re.search(
+        r"^description:", fm, re.MULTILINE
+    ):
         return (
             "Error: frontmatter must include both `name:` and "
-            "`description:` keys. The description is what the agent "
-            "uses to decide when the skill applies."
+            "`description:` keys at the start of a line. The "
+            "description is what the agent uses to decide when the "
+            "skill applies."
         )
     _, vault_dir = _skill_paths()
     if vault_dir is None:

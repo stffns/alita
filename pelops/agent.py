@@ -55,27 +55,30 @@ def _build_model(model_id: str):
 def _discover_skill_sources() -> list[str]:
     """Return the list of directories deepagents should scan for skills.
 
-    Two sources, in priority order:
-      1. `pelops/skills/` -- code-shipped skills (briefing-builder,
-         wiki-curator, etc). Versioned with the python package.
-      2. `<wiki_dir>/skills/` -- Alita-authored skills written via the
-         `skill_write` tool. Auto-discovered at agent build time.
-         Closes the Hermes-style self-improvement loop: when Alita
-         notices a recurring task that would benefit from a skill,
-         she writes one. On the next agent rebuild (triggered by
-         persona/skill mtime invalidation in `ask()`), it gets loaded.
+    Priority order: VAULT first, then CODE. The vault wins for
+    duplicate slugs so Alita can refine a code-shipped skill by
+    writing an improved version via `skill_write` -- without that
+    priority, refinements would be shadowed by the original code
+    version, breaking the REFINE workflow documented in the
+    skill-builder skill.
 
-    Either path is optional -- missing directories are skipped silently.
+      1. `<wiki_dir>/skills/` -- Alita-authored skills written via the
+         `skill_write` tool. Auto-discovered at agent build time.
+      2. `pelops/skills/` -- code-shipped skills as the floor.
+
+    Both paths are absolute to avoid surprises depending on the
+    process's current working directory. Either path is optional;
+    missing directories are skipped silently.
     """
     sources: list[str] = []
-    if SKILLS_DIR.exists():
-        sources.append(str(SKILLS_DIR.relative_to(PROJECT_ROOT)))
     try:
         wiki_skills = Settings.load().wiki_dir / "skills"
     except Exception:
         wiki_skills = None
     if wiki_skills is not None and wiki_skills.exists():
-        sources.append(str(wiki_skills))
+        sources.append(str(wiki_skills.resolve()))
+    if SKILLS_DIR.exists():
+        sources.append(str(SKILLS_DIR.resolve()))
     return sources
 
 
