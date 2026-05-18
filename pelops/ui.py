@@ -182,6 +182,15 @@ async def on_message(message: cl.Message) -> None:
             "recursion_limit": 50,
         },
     ):
+        # SummarizationMiddleware invokes the chat model with a
+        # `lc_source=summarization` metadata tag when it compresses
+        # old turns. Drop EVERY event from that branch -- not just
+        # model-stream tokens -- so a future internal tool call from
+        # within the summarization path (`on_tool_start`, etc) cannot
+        # leak into the chat either. Bug surfaced 2026-05-18.
+        md = event.get("metadata") or {}
+        if md.get("lc_source") == "summarization":
+            continue
         kind = event["event"]
         if kind == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
