@@ -1056,6 +1056,52 @@ def code_execute(code: str, language: str = "python", timeout_seconds: int = 30)
 SANDBOX_TOOLS = [code_execute]
 
 
+# ---------- Host filesystem write (allowlisted) -------------------------
+#
+# The deepagents built-in `write_file` tool is sandboxed under
+# PROJECT_ROOT via FilesystemBackend(virtual_mode=True). That sandbox
+# is good for safety but makes a request like "save it to my Desktop"
+# silently fail -- the file lands at `stilt/Users/.../foo.html` which
+# Jay never sees. `host_write_file` is the explicit escape hatch: a
+# narrow tool that writes to the REAL filesystem, but only under the
+# directories in `ALITA_HOST_WRITE_DIRS` (default Desktop / Documents
+# / Downloads). See `pelops/host_fs.py` for the safety contract.
+
+
+@tool
+def host_write_file(path: str, content: str) -> str:
+    """Save a file directly to Jay's real filesystem (not the sandbox).
+
+    Use this when Jay says "save to my Desktop" or "put it in my
+    Documents". The deepagents `write_file` tool writes inside the
+    repo's virtual filesystem, which is invisible to Jay. THIS tool
+    writes to the actual host disk.
+
+    Args:
+        path: Absolute path (or `~`-prefixed), e.g. '~/Desktop/foo.py'.
+            Must land under an allowed root -- by default `~/Desktop`,
+            `~/Documents`, `~/Downloads`. Path traversal (`..`) is
+            rejected. Relative paths without `~` are rejected.
+        content: File body. UTF-8.
+
+    Returns:
+        On success: "Saved to <resolved-path> (N bytes)".
+        On refusal: "Error: <reason>" -- typically a path-policy issue.
+    """
+    from pelops import host_fs
+
+    try:
+        resolved = host_fs.write(path, content)
+    except host_fs.HostFsError as exc:
+        return f"Error: {exc}"
+    except OSError as exc:
+        return f"Error: write failed -- {exc}"
+    return f"Saved to {resolved} ({len(content)} bytes)"
+
+
+HOST_FS_TOOLS = [host_write_file]
+
+
 CHAT_TOOLS = [
     now,
     vstash_recall,
@@ -1070,4 +1116,5 @@ CHAT_TOOLS = [
     *CODE_TOOLS,
     *GITHUB_TOOLS,
     *SANDBOX_TOOLS,
+    *HOST_FS_TOOLS,
 ]
