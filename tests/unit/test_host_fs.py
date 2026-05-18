@@ -56,6 +56,27 @@ def test_write_overwrites_existing_regular_file(sandbox_root: Path):
     assert target.read_text() == "second"
 
 
+def test_new_file_has_0644_perms(sandbox_root: Path):
+    """A freshly-created file must NOT inherit tempfile's 0600.
+
+    Regression for the 2026-05-18 metricas-pelops.html report: Jay's
+    HTML landed at `rw-------`, which is hostile to "open in browser"
+    on shared accounts and just looks wrong. New files default 0644.
+    """
+    target = sandbox_root / "fresh.html"
+    host_fs.write(str(target), "<html/>")
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
+def test_overwrite_preserves_existing_perms(sandbox_root: Path):
+    """An overwrite must keep whatever mode the user had set."""
+    target = sandbox_root / "script.sh"
+    target.write_text("#!/bin/sh\necho hi\n")
+    target.chmod(0o755)
+    host_fs.write(str(target), "#!/bin/sh\necho changed\n")
+    assert target.stat().st_mode & 0o777 == 0o755
+
+
 def test_write_is_atomic_on_failure(sandbox_root: Path, monkeypatch: pytest.MonkeyPatch):
     """If os.replace fails the original file must NOT be touched."""
     target = sandbox_root / "atomic.txt"
@@ -126,7 +147,7 @@ def test_reject_when_no_dirs_configured(sandbox_root: Path, monkeypatch: pytest.
 
     get_settings.cache_clear()
     try:
-        with pytest.raises(host_fs.HostFsError, match="no host-write directories"):
+        with pytest.raises(host_fs.HostFsError, match="no host directories"):
             host_fs.write(str(sandbox_root / "x.txt"), "x")
     finally:
         get_settings.cache_clear()
@@ -163,3 +184,118 @@ def test_host_write_file_tool_policy_refusal(sandbox_root: Path):
     out = host_write_file.invoke({"path": "/etc/passwd", "content": "x"})
     assert out.startswith("Error:")
     assert "not under any allowed root" in out
+
+
+# ---------- host_fs.read ----------------------------------------------
+
+
+def test_read_inside_allowed_root(sandbox_root: Path):
+    target = sandbox_root / "doc.txt"
+    target.write_text("hola mundo")
+    assert host_fs.read(str(target)) == "hola mundo"
+
+
+def test_read_truncates_huge_file(sandbox_root: Path, monkeypatch: pytest.MonkeyPatch):
+    """Past the byte cap the response is truncated with a marker."""
+    monkeypatch.setattr(host_fs, "_READ_BYTE_CAP", 100)
+    target = sandbox_root / "big.txt"
+    target.write_text("a" * 500)
+    out = host_fs.read(str(target))
+    assert "a" * 100 in out
+    assert "truncated" in out
+    assert "500" in out  # original byte count surfaced
+
+
+def test_read_refuses_outside_root(sandbox_root: Path, tmp_path_factory):
+    other = tmp_path_factory.mktemp("not-allowed") / "secret.txt"
+    other.write_text("nope")
+    with pytest.raises(host_fs.HostFsError, match="not under any allowed root"):
+        host_fs.read(str(other))
+
+
+def test_read_rejects_directory(sandbox_root: Path):
+    """`read` on a directory must fail explicitly, not silently."""
+    with pytest.raises(host_fs.HostFsError, match="not a regular file"):
+        host_fs.read(str(sandbox_root))
+
+
+def test_read_rejects_missing(sandbox_root: Path):
+    with pytest.raises(host_fs.HostFsError, match="not found"):
+        host_fs.read(str(sandbox_root / "ghost.txt"))
+
+
+# ---------- host_fs.ls ------------------------------------------------
+
+
+def test_ls_lists_entries(sandbox_root: Path):
+    (sandbox_root / "a.txt").write_text("xx")
+    (sandbox_root / "b.txt").write_text("yyy")
+    (sandbox_root / "subdir").mkdir()
+    entries = host_fs.ls(str(sandbox_root))
+    names = [e["name"] for e in entries]
+    assert names == ["subdir", "a.txt", "b.txt"]
+    sizes = {e["name"]: e["size"] for e in entries}
+    assert sizes["a.txt"] == 2
+    assert sizes["b.txt"] == 3
+    assert sizes["subdir"] is None
+    types = {e["name"]: e["type"] for e in entries}
+    assert types == {"subdir": "dir", "a.txt": "file", "b.txt": "file"}
+
+
+def test_ls_empty_directory(sandbox_root: Path):
+    sub = sandbox_root / "empty"
+    sub.mkdir()
+    assert host_fs.ls(str(sub)) == []
+
+
+def test_ls_refuses_outside_root(sandbox_root: Path, tmp_path_factory):
+    elsewhere = tmp_path_factory.mktemp("not-allowed")
+    with pytest.raises(host_fs.HostFsError, match="not under any allowed root"):
+        host_fs.ls(str(elsewhere))
+
+
+def test_ls_rejects_file_target(sandbox_root: Path):
+    target = sandbox_root / "doc.txt"
+    target.write_text("x")
+    with pytest.raises(host_fs.HostFsError, match="not a directory"):
+        host_fs.ls(str(target))
+
+
+# ---------- tool wrappers (read / ls) ---------------------------------
+
+
+@_requires_vstash
+def test_host_read_file_tool_round_trip(sandbox_root: Path):
+    """Symmetry: what host_write_file saved, host_read_file finds.
+
+    Regression for Jay's 2026-05-18 report: metricas-pelops.html was
+    saved correctly but Alita could not verify it because the in-repo
+    `read_file` is sandboxed under PROJECT_ROOT.
+    """
+    from pelops.tools import host_read_file, host_write_file
+
+    target = sandbox_root / "echo.txt"
+    host_write_file.invoke({"path": str(target), "content": "round-trip OK"})
+    out = host_read_file.invoke({"path": str(target)})
+    assert out == "round-trip OK"
+
+
+@_requires_vstash
+def test_host_ls_tool_renders_entries(sandbox_root: Path):
+    from pelops.tools import host_ls
+
+    (sandbox_root / "x.md").write_text("hello")
+    (sandbox_root / "y").mkdir()
+    out = host_ls.invoke({"path": str(sandbox_root)})
+    assert "x.md" in out
+    assert "y" in out
+    # Directories listed before files.
+    assert out.index("y") < out.index("x.md")
+
+
+@_requires_vstash
+def test_host_read_file_tool_policy_refusal(sandbox_root: Path):
+    from pelops.tools import host_read_file
+
+    out = host_read_file.invoke({"path": "/etc/passwd"})
+    assert out.startswith("Error:")

@@ -1099,7 +1099,70 @@ def host_write_file(path: str, content: str) -> str:
     return f"Saved to {resolved} ({len(content)} bytes)"
 
 
-HOST_FS_TOOLS = [host_write_file]
+@tool
+def host_read_file(path: str) -> str:
+    """Read a file from Jay's real filesystem (same allowlist as host_write_file).
+
+    Use this to VERIFY what you wrote with `host_write_file`, or to
+    read anything Jay has under `~/Desktop`, `~/Documents`,
+    `~/Downloads` (or whatever `ALITA_HOST_WRITE_DIRS` is set to).
+    Symmetric counterpart to `host_write_file` -- the in-repo
+    `read_file` tool only sees the virtual FS rooted at the stilt
+    repo and will NOT find files you saved to Desktop.
+
+    Args:
+        path: Absolute path (or `~`-prefixed). The path itself must
+            live inside an allowed root.
+
+    Returns:
+        File contents (UTF-8). Truncated past ~200KB with a marker.
+        On policy violation or missing/non-file target: "Error: ...".
+    """
+    from pelops import host_fs
+
+    try:
+        return host_fs.read(path)
+    except host_fs.HostFsError as exc:
+        return f"Error: {exc}"
+    except OSError as exc:
+        return f"Error: read failed -- {exc}"
+
+
+@tool
+def host_ls(path: str) -> str:
+    """List entries of a directory on Jay's real filesystem.
+
+    Use this when Jay says "what's in my Desktop?" or to confirm
+    `host_write_file` actually persisted a file. The in-repo `ls`
+    tool only sees the deepagents virtual FS.
+
+    Args:
+        path: Absolute directory path (or `~`-prefixed). Must be
+            inside an allowed root.
+
+    Returns:
+        One entry per line: "<type> <size> <name>". Dirs first,
+        then files (both alphabetical). `size` shown for files only.
+        On policy violation or missing dir: "Error: ...".
+    """
+    from pelops import host_fs
+
+    try:
+        entries = host_fs.ls(path)
+    except host_fs.HostFsError as exc:
+        return f"Error: {exc}"
+    except OSError as exc:
+        return f"Error: ls failed -- {exc}"
+    if not entries:
+        return "(empty directory)"
+    lines = []
+    for e in entries:
+        size = "-" if e["size"] is None else f"{e['size']:>9}"
+        lines.append(f"{e['type']:<5} {size}  {e['name']}")
+    return "\n".join(lines)
+
+
+HOST_FS_TOOLS = [host_write_file, host_read_file, host_ls]
 
 
 CHAT_TOOLS = [
