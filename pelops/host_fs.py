@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -255,3 +257,107 @@ def ls(path: str) -> list[dict]:
         entries.append({"name": child.name, "type": kind, "size": size})
     entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
     return entries
+
+
+# --------------------------------------------------------------------- #
+# HTML -> PDF via headless Chrome
+# --------------------------------------------------------------------- #
+
+# Well-known macOS locations for Chrome-family browsers. We pick whichever
+# exists. Linux paths (`google-chrome`, `chromium`, etc.) are appended via
+# `shutil.which` so this works in a CI runner with chromium installed.
+_CHROME_PATHS = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Arc.app/Contents/MacOS/Arc",
+)
+
+# Cap on PDF render time. A page with heavy CSS / external fonts can
+# legitimately take ~10s; past 60s something is wrong (network fetch
+# stuck, Chrome hung). The container does not have network access here
+# so external resources will time out fast.
+_PDF_RENDER_TIMEOUT = 60
+
+
+def _find_chrome() -> str:
+    """Locate a Chrome-family binary on the host, or raise."""
+    for path in _CHROME_PATHS:
+        if Path(path).is_file():
+            return path
+    for name in ("google-chrome", "chromium", "chromium-browser"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise HostFsError(
+        "no Chrome-family browser found. Install Google Chrome, or "
+        "set up another path. Headless Chrome is the PDF backend."
+    )
+
+
+def export_pdf(html_path: str, output_path: str | None = None) -> Path:
+    """Convert an HTML file on disk to a PDF, both inside the allowlist.
+
+    Args:
+        html_path: existing .html file under one of the allowed roots.
+        output_path: where the PDF should land. Defaults to the same
+            directory and stem as `html_path`, with `.pdf` extension.
+            Must ALSO be under an allowed root.
+
+    Returns:
+        The resolved Path of the written PDF.
+
+    Raises:
+        HostFsError: input not found / not html / Chrome missing /
+            output policy violation / render failure.
+        OSError: if Chrome crashes mid-render.
+    """
+    src = _validate(html_path, must_be_inside_root=True)
+    if not src.exists():
+        raise HostFsError(f"source not found: {src}")
+    if not src.is_file():
+        raise HostFsError(f"source not a regular file: {src}")
+    if src.suffix.lower() not in {".html", ".htm"}:
+        # The agent should pass an HTML file. Forbidding other suffixes
+        # avoids accidentally rendering a binary or a path that looks
+        # like HTML but is not.
+        raise HostFsError(f"source must be .html or .htm: got {src.suffix!r}")
+
+    if output_path is None:
+        dst = src.with_suffix(".pdf")
+    else:
+        dst = _validate(output_path)  # parent under allowlist
+        if dst.suffix.lower() != ".pdf":
+            raise HostFsError(f"output must end in .pdf: got {dst.suffix!r}")
+
+    chrome = _find_chrome()
+    # Build Chrome argv. `--headless=new` is the supported flag on
+    # Chrome 109+ (the older `--headless` is deprecated). `--no-pdf-
+    # header-footer` removes the auto-added "page N of M" footer that
+    # would otherwise clutter the output. `--disable-gpu` is needed
+    # on some macOS configs to keep headless from waiting for GPU.
+    argv = [
+        chrome,
+        "--headless=new",
+        "--disable-gpu",
+        "--no-pdf-header-footer",
+        f"--print-to-pdf={dst}",
+        f"file://{src}",
+    ]
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            timeout=_PDF_RENDER_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HostFsError(
+            f"Chrome did not finish within {_PDF_RENDER_TIMEOUT}s "
+            f"(input: {src}). Likely a stuck external resource."
+        ) from exc
+
+    if proc.returncode != 0 or not dst.exists():
+        stderr = proc.stderr.decode("utf-8", errors="replace")[:300]
+        raise HostFsError(f"Chrome exited {proc.returncode} without producing {dst}: {stderr}")
+    _log.info("host_fs: rendered %s -> %s (%d bytes)", src, dst, dst.stat().st_size)
+    return dst

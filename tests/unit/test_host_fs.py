@@ -299,3 +299,70 @@ def test_host_read_file_tool_policy_refusal(sandbox_root: Path):
 
     out = host_read_file.invoke({"path": "/etc/passwd"})
     assert out.startswith("Error:")
+
+
+# ---------- host_fs.export_pdf ----------------------------------------
+
+
+def test_export_pdf_rejects_non_html(sandbox_root: Path):
+    target = sandbox_root / "doc.txt"
+    target.write_text("hola")
+    with pytest.raises(host_fs.HostFsError, match=r"must be \.html"):
+        host_fs.export_pdf(str(target))
+
+
+def test_export_pdf_rejects_missing_source(sandbox_root: Path):
+    with pytest.raises(host_fs.HostFsError, match="source not found"):
+        host_fs.export_pdf(str(sandbox_root / "ghost.html"))
+
+
+def test_export_pdf_rejects_outside_root(sandbox_root: Path, tmp_path_factory):
+    other = tmp_path_factory.mktemp("not-allowed") / "page.html"
+    other.write_text("<html/>")
+    with pytest.raises(host_fs.HostFsError, match="not under any allowed root"):
+        host_fs.export_pdf(str(other))
+
+
+def test_export_pdf_rejects_non_pdf_output(sandbox_root: Path):
+    src = sandbox_root / "p.html"
+    src.write_text("<html/>")
+    with pytest.raises(host_fs.HostFsError, match=r"output must end in \.pdf"):
+        host_fs.export_pdf(str(src), output_path=str(sandbox_root / "out.txt"))
+
+
+def test_export_pdf_raises_when_chrome_missing(sandbox_root: Path, monkeypatch: pytest.MonkeyPatch):
+    """If no Chrome-family browser is found we raise a clear error."""
+    src = sandbox_root / "p.html"
+    src.write_text("<html><body>hi</body></html>")
+    monkeypatch.setattr(host_fs, "_CHROME_PATHS", ())
+    monkeypatch.setattr(host_fs.shutil, "which", lambda _name: None)
+    with pytest.raises(host_fs.HostFsError, match="no Chrome"):
+        host_fs.export_pdf(str(src))
+
+
+@pytest.mark.skipif(
+    not any(Path(p).is_file() for p in host_fs._CHROME_PATHS),
+    reason="no Chrome-family browser installed",
+)
+def test_export_pdf_integration_real_chrome(sandbox_root: Path):
+    """End-to-end: real Chrome renders a small HTML to a real PDF.
+
+    Skipped on CI (no Chrome). Local-only smoke. Verifies the argv
+    construction + Chrome's quirks against a real binary.
+    """
+    src = sandbox_root / "tiny.html"
+    src.write_text("<!doctype html><html><body><h1>Hola</h1></body></html>")
+    pdf = host_fs.export_pdf(str(src))
+    assert pdf.exists()
+    assert pdf.suffix == ".pdf"
+    assert pdf.stat().st_size > 200  # any real PDF is >200 bytes
+    # Header sanity: PDFs start with %PDF-
+    assert pdf.read_bytes().startswith(b"%PDF-")
+
+
+@_requires_vstash
+def test_host_export_pdf_tool_policy_refusal(sandbox_root: Path):
+    from pelops.tools import host_export_pdf
+
+    out = host_export_pdf.invoke({"html_path": "/etc/passwd"})
+    assert out.startswith("Error:")

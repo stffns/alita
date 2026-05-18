@@ -1162,7 +1162,42 @@ def host_ls(path: str) -> str:
     return "\n".join(lines)
 
 
-HOST_FS_TOOLS = [host_write_file, host_read_file, host_ls]
+@tool
+def host_export_pdf(html_path: str, output_path: str | None = None) -> str:
+    """Render an HTML file on disk to a PDF (same allowlist as host_write_file).
+
+    Use this after writing an HTML report with `host_write_file` to give
+    Jay a PDF version he can share / archive / read on a tablet. The
+    PDF lands next to the HTML by default; pass `output_path` to
+    override (must still be inside an allowed root).
+
+    Args:
+        html_path: an existing `.html` file under an allowed root
+            (default `~/Desktop`, `~/Documents`, `~/Downloads`).
+        output_path: optional `.pdf` destination. Defaults to the same
+            stem as `html_path` with `.pdf` extension.
+
+    Returns:
+        "Saved PDF to <path> (N bytes)" on success. "Error: ..." on
+        policy / Chrome / render failure.
+
+    Limitations: the backend is headless Chrome. JavaScript executes,
+    BUT external network resources are subject to Chrome's default
+    timeout -- pages that fetch from CDNs may render incompletely.
+    For pure HTML+CSS (most LLM-generated docs) the fidelity is good.
+    """
+    from pelops import host_fs
+
+    try:
+        out = host_fs.export_pdf(html_path, output_path)
+    except host_fs.HostFsError as exc:
+        return f"Error: {exc}"
+    except OSError as exc:
+        return f"Error: PDF render failed -- {exc}"
+    return f"Saved PDF to {out} ({out.stat().st_size} bytes)"
+
+
+HOST_FS_TOOLS = [host_write_file, host_read_file, host_ls, host_export_pdf]
 
 
 CHAT_TOOLS = [

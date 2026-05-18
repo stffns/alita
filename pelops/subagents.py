@@ -4,6 +4,11 @@ Each entry is a `SubAgent` TypedDict (deepagents). The `researcher` returns
 SHORT PROSE for the main agent to digest (NOT pre-formatted structure -- that
 caused the main agent to relay the formatting straight to Jay). The `planner`
 produces a checklist via `write_todos` for multi-step requests.
+
+`deep` and `vision` are model-overrides: deepagents lets each sub-agent
+declare its own `model` (see `SubAgent.model`), so the main chat can stay
+on the cheap Flash model while expensive / specialized capabilities live
+behind a `task("deep", ...)` or `task("vision", ...)` call.
 """
 
 from __future__ import annotations
@@ -11,6 +16,13 @@ from __future__ import annotations
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 
 from pelops.tools import research, vstash_remember
+
+# Model ids for the specialized sub-agents. Hardcoded here (not config
+# fields) because they are pinned to the sub-agent's purpose -- the
+# tradeoffs change if the model changes. If we ever want them env-
+# configurable we can move them to `pelops.config`.
+DEEP_MODEL = "openrouter:deepseek/deepseek-v4-pro"
+VISION_MODEL = "openrouter:google/gemini-2.5-flash"
 
 # NOTE: this sub-agent used to return a Pydantic ResearchBrief via
 # `response_format=ToolStrategy(...)`. The schema enforced structure, but
@@ -102,4 +114,86 @@ PLANNER: SubAgent = {
 }
 
 
-SUBAGENTS: list[SubAgent | CompiledSubAgent] = [RESEARCHER, PLANNER]
+DEEP_PROMPT = """You are Pelops's deep-thinker. The main agent calls you
+when a problem is hard enough that a Flash model would skim it. You run
+on a larger, slower, more expensive model -- justify the cost by THINKING.
+
+WORKFLOW
+1. Read the problem. Identify what is HARD about it: ambiguity, multiple
+   valid paths, a subtle invariant, a non-obvious tradeoff.
+2. Reason in 3-6 short paragraphs of plain prose. No bullets, no
+   headings. Show your work in the prose itself.
+3. If the answer needs facts you do not have, call `research` ONCE and
+   weave the finding into the prose. Do not chain multiple research
+   calls -- that is the researcher's job; you are the thinker.
+4. Return the prose to the main agent. The main agent decides how to
+   shape that into Jay's reply.
+
+RULES
+- React, do not relay. You are not a fancy quote-back machine.
+- Cite weakness explicitly. "I am unsure about X" is better than fake
+  certainty. The main agent needs to know what to trust.
+- Disagree with the framing if the question is wrong. The main agent
+  may have misunderstood Jay; you are allowed to flag that.
+- One open question at the end is OK if it changes the answer. Skip
+  it if it is filler.
+"""
+
+
+DEEP: SubAgent = {
+    "name": "deep",
+    "description": (
+        "Delegate when a question needs careful reasoning rather than a "
+        "quick answer: design tradeoffs, debugging subtle bugs, comparing "
+        "two architectures, explaining WHY something works. Runs on a "
+        "stronger (slower, pricier) model than the main chat. Use for "
+        "'pensa mejor esto', 'analiza X a fondo', 'que harias y por que'."
+    ),
+    "system_prompt": DEEP_PROMPT,
+    "tools": [research, vstash_remember],
+    "model": DEEP_MODEL,
+}
+
+
+VISION_PROMPT = """You are Pelops's vision specialist. The main agent calls
+you whenever Jay sends an image, a screenshot, or a photo. The main chat
+model (DeepSeek v4) is text-only, so you are the only path the system has
+to actually SEE what was sent.
+
+WORKFLOW
+1. Look at the image carefully. If it is a screenshot of code / UI /
+   error / chat, READ it. If it is a photo, describe what matters.
+2. Answer the question Jay attached to the image (if any). If there is
+   no explicit question, surface the 2-3 most useful observations.
+3. If the image contains text the main agent will need (an error trace,
+   code, a paragraph), include it inline in your prose so the main agent
+   can act on it without re-OCRing.
+4. Return SHORT prose, 2-4 paragraphs. The main agent will reshape it
+   into Jay's reply. No bullets unless the image itself is a list.
+
+RULES
+- Do NOT invent details. If part of the image is unclear, say so.
+- For code screenshots, read identifiers letter-by-letter; misreading
+  one char defeats the point of having vision.
+- If the image is a memes / joke / not load-bearing for a question,
+  say what is on it in one sentence and stop.
+"""
+
+
+VISION: SubAgent = {
+    "name": "vision",
+    "description": (
+        "Delegate when the input contains an image, screenshot, or photo "
+        "(Telegram photo, Chainlit upload, or a `host_read_file` of a "
+        "PNG/JPG). Runs on a multimodal model -- the main chat model "
+        "cannot see images. Returns prose describing what is in the "
+        "image and answering any attached question."
+    ),
+    "system_prompt": VISION_PROMPT,
+    # No extra tools -- the vision sub-agent should look at the image
+    # and reason, not chain into research/web.
+    "model": VISION_MODEL,
+}
+
+
+SUBAGENTS: list[SubAgent | CompiledSubAgent] = [RESEARCHER, PLANNER, DEEP, VISION]
