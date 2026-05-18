@@ -166,17 +166,20 @@ def test_entity_graph_aggregates_all_inbound(wiki_dir: Path) -> None:
     wiki.write("alita", "Hub.")
     wiki.write("vstash", "Storage for [[alita]] (used_by).")
     wiki.write("heartbeat", "Cron in [[alita]] and notes from [[vstash]].")
-    wiki.write("orphan-page", "I reference nothing relevant. Plain text.")
+    # "graph-orphan" has an OUTBOUND link (anti-orphan passes) but NO
+    # inbound -- this is what the entity-graph calls an orphan.
+    wiki.write("graph-orphan", "I reference [[alita]] but nothing references me back.")
     graph = wiki.entity_graph()
-    # alita appears in graph; has 2 plain inbound (vstash, heartbeat),
-    # 1 typed inbound (vstash, used_by)
-    assert sorted(graph["alita"]["inbound_plain"]) == ["heartbeat", "vstash"]
+    # alita has 3 plain inbound (vstash, heartbeat, graph-orphan).
+    # The typed form `[[alita]] (used_by)` ALSO contributes to
+    # inbound_plain because BACKLINK_RE catches the inner `[[alita]]`.
+    assert sorted(graph["alita"]["inbound_plain"]) == ["graph-orphan", "heartbeat", "vstash"]
     assert graph["alita"]["inbound_typed"] == [("vstash", "used_by")]
     # vstash has 1 plain inbound from heartbeat
     assert graph["vstash"]["inbound_plain"] == ["heartbeat"]
-    # orphan-page has no inbound from anywhere
-    assert graph["orphan-page"]["inbound_plain"] == []
-    assert graph["orphan-page"]["inbound_typed"] == []
+    # graph-orphan has no inbound from anywhere
+    assert graph["graph-orphan"]["inbound_plain"] == []
+    assert graph["graph-orphan"]["inbound_typed"] == []
 
 
 def test_entity_graph_single_scan_handles_unknown_targets(wiki_dir: Path) -> None:
@@ -184,10 +187,13 @@ def test_entity_graph_single_scan_handles_unknown_targets(wiki_dir: Path) -> Non
     from pelops import wiki
 
     wiki.write("alita", "Hub.")
-    wiki.write("vstash", "Refers to [[ghost]] which doesn't exist.")
+    # vstash links to both an existing page (alita, to pass anti-orphan)
+    # AND a nonexistent slug (ghost). The graph should silently skip ghost.
+    wiki.write("vstash", "Refers to [[ghost]] (does not exist) and [[alita]].")
     graph = wiki.entity_graph()
     assert "ghost" not in graph
-    assert graph["alita"]["inbound_plain"] == []
+    # alita gets the inbound from vstash; ghost is ignored gracefully.
+    assert graph["alita"]["inbound_plain"] == ["vstash"]
 
 
 def test_frontmatter_preserves_created_date_on_update(wiki_dir: Path) -> None:
