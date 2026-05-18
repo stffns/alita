@@ -161,13 +161,23 @@ def _maybe_invalidate_agent_cache() -> None:
         build_agent.cache_clear()
 
 
+_EMPTY_CONTENT_REPLY = (
+    "(Perdi la sintesis final -- la cadena de tools se quedo sin "
+    "espacio antes de que escribiera una respuesta. Probemos de "
+    "nuevo, o partimos la pregunta en pedazos mas chicos. "
+    "/ I lost the final synthesis -- the tool chain ran out of room "
+    "before I could write a response. Try asking again, or split the "
+    "question into smaller parts.)"
+)
+
+
 def ask(
     message: str,
     history: list[dict] | None = None,
     restricted: bool = False,
     source: str = "chat",
     thread_id: str | None = None,
-    recursion_limit: int = 25,
+    recursion_limit: int = 40,
 ) -> str:
     """Synchronous helper for one-shot questions.
 
@@ -177,15 +187,25 @@ def ask(
     of the same kind share state -- normally desirable for cron jobs.
 
     `recursion_limit` caps the number of LangGraph node steps before the
-    graph stops. Default 25 matches LangGraph's own default. Callers
-    that chain many tool calls (e.g., autonomous jobs) should pass a
-    higher value; the call site documents the rationale.
+    graph stops. Default 40 (was 25 = LangGraph's default; bumped after
+    observing multi-page wiki-synthesis queries hit the cap and return
+    `content=''`). Autonomous flows pass higher values (heartbeat: 50)
+    documented at the call site.
 
     On every call we check `persona.md` for changes and rebuild the
     cached agent if the file was edited -- this is what makes wiki
     edits to the persona take effect on the next turn without a
     restart.
+
+    When the underlying model produces an empty final message (which
+    happens when the recursion cap is reached mid-chain, or the model
+    rate-limits, or just returns no text), we substitute a friendly
+    placeholder instead of leaking the raw `AIMessage` repr to the
+    caller. The placeholder explains what happened and suggests a
+    retry.
     """
+    from langchain_core.messages import AIMessage
+
     _maybe_invalidate_agent_cache()
     agent = build_agent(restricted=restricted)
     messages = list(history or [])
@@ -199,4 +219,26 @@ def ask(
         },
     )
     final = result["messages"][-1]
-    return getattr(final, "content", None) or str(final)
+    # Only an AIMessage is a valid final answer. If the chain stopped
+    # mid-flight (e.g., recursion limit hit after a tool call), the
+    # last message is a ToolMessage whose `content` is raw tool output
+    # and must NOT be surfaced to the user. Treat that as empty too.
+    if isinstance(final, AIMessage):
+        content = getattr(final, "content", None)
+        # content can be str OR a list of content blocks (multi-modal /
+        # structured output). For the simple-text case, return as-is.
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list) and content:
+            # Join string-valued blocks. Anything non-string is dropped.
+            text = "".join(b for b in content if isinstance(b, str)).strip()
+            if text:
+                return text
+    _log.warning(
+        "ask: empty/non-AI final message (source=%s, thread=%s, type=%s); "
+        "likely recursion_limit hit, tool-loop overshoot, or model refusal",
+        source,
+        thread_id or f"default-{source}",
+        type(final).__name__,
+    )
+    return _EMPTY_CONTENT_REPLY
