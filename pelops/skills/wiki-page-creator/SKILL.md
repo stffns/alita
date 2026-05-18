@@ -11,12 +11,15 @@ collapse steps -- the structure exists so the whole flow fits well
 under the graph recursion cap. Improvised chains hit recursion limit
 50 and leave the page half-created.
 
-## Step 1: Check if a page already exists
+## Step 1: Decide create vs update
 
 Slug the topic to lowercase kebab-case (e.g. "LangGraph" -> `langgraph`).
 Call `wiki_search(<topic-keywords>)` and `wiki_read(<slug>)`. If a page
-already exists, EDIT it via `wiki_write` to add the new material -- do
-NOT create a parallel page. Exit after the edit.
+already exists, mark this run as an UPDATE -- you will EDIT the
+existing page in step 4 instead of creating a new one. Do NOT create
+a parallel page. Continue to step 2 either way: even updates need
+fresh research to avoid paraphrasing the user's request without new
+material (see Anti-patterns below).
 
 ## Step 2: Research the topic
 
@@ -60,7 +63,7 @@ that body -- inside an existing paragraph that already touches the
 topic, not crammed at the end. Build the updated body. Call:
 
     wiki_write(<adopter-slug>, updated_body,
-               sources=['adopted_<new-slug>'])
+               sources=['research_<slug>'])
 
 This satisfies the INBOUND anti-orphan rule (no graph orphans).
 
