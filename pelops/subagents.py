@@ -15,14 +15,21 @@ from __future__ import annotations
 
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 
+from pelops.models import build_model
 from pelops.tools import research, vstash_remember
 
 # Model ids for the specialized sub-agents. Hardcoded here (not config
 # fields) because they are pinned to the sub-agent's purpose -- the
 # tradeoffs change if the model changes. If we ever want them env-
 # configurable we can move them to `pelops.config`.
-DEEP_MODEL = "openrouter:deepseek/deepseek-v4-pro"
-VISION_MODEL = "openrouter:google/gemini-2.5-flash"
+#
+# IMPORTANT: SubAgent.model accepts either a `str` (passed to
+# `init_chat_model`) or a `BaseChatModel`. We pass the constructed
+# model because `init_chat_model` cannot route `openrouter:` -- it
+# would try to import a non-existent `langchain_openrouter` package.
+# Our `_build_model` knows how to wire OpenRouter via ChatOpenAI.
+_DEEP_MODEL = build_model("openrouter:deepseek/deepseek-v4-pro")
+_VISION_MODEL = build_model("openrouter:google/gemini-2.5-flash")
 
 # NOTE: this sub-agent used to return a Pydantic ResearchBrief via
 # `response_format=ToolStrategy(...)`. The schema enforced structure, but
@@ -151,7 +158,7 @@ DEEP: SubAgent = {
     ),
     "system_prompt": DEEP_PROMPT,
     "tools": [research, vstash_remember],
-    "model": DEEP_MODEL,
+    "model": _DEEP_MODEL,
 }
 
 
@@ -192,7 +199,7 @@ VISION: SubAgent = {
     "system_prompt": VISION_PROMPT,
     # No extra tools -- the vision sub-agent should look at the image
     # and reason, not chain into research/web.
-    "model": VISION_MODEL,
+    "model": _VISION_MODEL,
 }
 
 
