@@ -161,13 +161,20 @@ def _maybe_invalidate_agent_cache() -> None:
         build_agent.cache_clear()
 
 
+_EMPTY_CONTENT_REPLY = (
+    "(I worked on this but lost the final synthesis -- the tool chain "
+    "ran out of room before I could write a response. Try asking me "
+    "again, or split the question into smaller parts.)"
+)
+
+
 def ask(
     message: str,
     history: list[dict] | None = None,
     restricted: bool = False,
     source: str = "chat",
     thread_id: str | None = None,
-    recursion_limit: int = 25,
+    recursion_limit: int = 40,
 ) -> str:
     """Synchronous helper for one-shot questions.
 
@@ -177,14 +184,22 @@ def ask(
     of the same kind share state -- normally desirable for cron jobs.
 
     `recursion_limit` caps the number of LangGraph node steps before the
-    graph stops. Default 25 matches LangGraph's own default. Callers
-    that chain many tool calls (e.g., autonomous jobs) should pass a
-    higher value; the call site documents the rationale.
+    graph stops. Default 40 (was 25 = LangGraph's default; bumped after
+    observing multi-page wiki-synthesis queries hit the cap and return
+    `content=''`). Autonomous flows pass higher values (heartbeat: 50)
+    documented at the call site.
 
     On every call we check `persona.md` for changes and rebuild the
     cached agent if the file was edited -- this is what makes wiki
     edits to the persona take effect on the next turn without a
     restart.
+
+    When the underlying model produces an empty final message (which
+    happens when the recursion cap is reached mid-chain, or the model
+    rate-limits, or just returns no text), we substitute a friendly
+    placeholder instead of leaking the raw `AIMessage` repr to the
+    caller. The placeholder explains what happened and suggests a
+    retry.
     """
     _maybe_invalidate_agent_cache()
     agent = build_agent(restricted=restricted)
@@ -199,4 +214,15 @@ def ask(
         },
     )
     final = result["messages"][-1]
-    return getattr(final, "content", None) or str(final)
+    content = getattr(final, "content", None)
+    if content and content.strip():
+        return content
+    # Empty / whitespace-only content. Log enough metadata to debug
+    # later; surface a friendly message instead of raw object repr.
+    _log.warning(
+        "ask: empty content from model (source=%s, thread=%s); "
+        "likely recursion_limit hit or model refusal",
+        source,
+        thread_id or f"default-{source}",
+    )
+    return _EMPTY_CONTENT_REPLY
