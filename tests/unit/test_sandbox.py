@@ -3,18 +3,40 @@
 Hermetic by default: `subprocess.Popen` (for the container) and
 `subprocess.run` (for `docker kill` + `docker info`) are patched so we
 never actually shell out to docker. The integration-style tests are
-gated by a pytest skip when the docker daemon is not reachable.
+gated by a pytest skip when the docker daemon is not reachable AND
+when running on CI (the GitHub Actions runner has Docker but we don't
+want CI to depend on an image pull that can fail for many reasons).
 """
 
 from __future__ import annotations
 
+import importlib.util
 import io
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from pelops import sandbox
+
+# `pelops.tools` imports vstash. vstash-local is intentionally not
+# installable on CI (see CLAUDE.md + .github/workflows/ci.yml). Tests
+# that import the tool wrapper must skip in that environment.
+_VSTASH_AVAILABLE = importlib.util.find_spec("vstash") is not None
+_requires_vstash = pytest.mark.skipif(
+    not _VSTASH_AVAILABLE,
+    reason="vstash-local not installed (skipped by design on CI)",
+)
+
+# Integration tests need a real Docker daemon AND we explicitly avoid
+# them on GitHub Actions even when Docker happens to be available --
+# CI is for hermetic correctness, not image-pull weather.
+_ON_CI = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+_requires_real_docker = pytest.mark.skipif(
+    _ON_CI or not sandbox._docker_daemon_running(),
+    reason="real-docker integration tests only run locally",
+)
 
 
 class _FakePopen:
@@ -260,6 +282,7 @@ def test_tempfile_cleanup_on_write_failure(monkeypatch: pytest.MonkeyPatch, tmp_
 # ---------- Tool wrapper -----------------------------------------------
 
 
+@_requires_vstash
 def test_code_execute_tool_returns_summary(monkeypatch: pytest.MonkeyPatch):
     """The `code_execute` tool formats sandbox results into a summary."""
     from pelops.tools import code_execute
@@ -280,6 +303,7 @@ def test_code_execute_tool_returns_summary(monkeypatch: pytest.MonkeyPatch):
     assert "hello" in out
 
 
+@_requires_vstash
 def test_code_execute_tool_respects_kill_switch(monkeypatch: pytest.MonkeyPatch):
     from pelops.config import get_settings
     from pelops.tools import code_execute
@@ -289,6 +313,7 @@ def test_code_execute_tool_respects_kill_switch(monkeypatch: pytest.MonkeyPatch)
     assert "disabled" in out
 
 
+@_requires_vstash
 def test_code_execute_tool_rejects_unknown_language(monkeypatch: pytest.MonkeyPatch):
     from pelops.tools import code_execute
 
@@ -299,10 +324,7 @@ def test_code_execute_tool_rejects_unknown_language(monkeypatch: pytest.MonkeyPa
 # ---------- Integration (only when docker is available) ---------------
 
 
-@pytest.mark.skipif(
-    not sandbox._docker_daemon_running(),
-    reason="docker daemon not reachable on this runner",
-)
+@_requires_real_docker
 def test_integration_run_python_real_docker():
     """End-to-end smoke test against a real Docker daemon.
 
@@ -315,10 +337,7 @@ def test_integration_run_python_real_docker():
     assert result["stdout"].strip() == "4"
 
 
-@pytest.mark.skipif(
-    not sandbox._docker_daemon_running(),
-    reason="docker daemon not reachable on this runner",
-)
+@_requires_real_docker
 def test_integration_boundary_network_blocked():
     """Network must be unreachable from inside the container."""
     code = (
@@ -335,10 +354,7 @@ def test_integration_boundary_network_blocked():
     assert "LEAK" not in result["stdout"]
 
 
-@pytest.mark.skipif(
-    not sandbox._docker_daemon_running(),
-    reason="docker daemon not reachable on this runner",
-)
+@_requires_real_docker
 def test_integration_boundary_root_fs_readonly():
     """Writing outside /tmp must fail (root FS is mounted read-only)."""
     code = (
