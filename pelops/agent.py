@@ -162,9 +162,12 @@ def _maybe_invalidate_agent_cache() -> None:
 
 
 _EMPTY_CONTENT_REPLY = (
-    "(I worked on this but lost the final synthesis -- the tool chain "
-    "ran out of room before I could write a response. Try asking me "
-    "again, or split the question into smaller parts.)"
+    "(Perdi la sintesis final -- la cadena de tools se quedo sin "
+    "espacio antes de que escribiera una respuesta. Probemos de "
+    "nuevo, o partimos la pregunta en pedazos mas chicos. "
+    "/ I lost the final synthesis -- the tool chain ran out of room "
+    "before I could write a response. Try asking again, or split the "
+    "question into smaller parts.)"
 )
 
 
@@ -201,6 +204,8 @@ def ask(
     caller. The placeholder explains what happened and suggests a
     retry.
     """
+    from langchain_core.messages import AIMessage
+
     _maybe_invalidate_agent_cache()
     agent = build_agent(restricted=restricted)
     messages = list(history or [])
@@ -214,15 +219,26 @@ def ask(
         },
     )
     final = result["messages"][-1]
-    content = getattr(final, "content", None)
-    if content and content.strip():
-        return content
-    # Empty / whitespace-only content. Log enough metadata to debug
-    # later; surface a friendly message instead of raw object repr.
+    # Only an AIMessage is a valid final answer. If the chain stopped
+    # mid-flight (e.g., recursion limit hit after a tool call), the
+    # last message is a ToolMessage whose `content` is raw tool output
+    # and must NOT be surfaced to the user. Treat that as empty too.
+    if isinstance(final, AIMessage):
+        content = getattr(final, "content", None)
+        # content can be str OR a list of content blocks (multi-modal /
+        # structured output). For the simple-text case, return as-is.
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list) and content:
+            # Join string-valued blocks. Anything non-string is dropped.
+            text = "".join(b for b in content if isinstance(b, str)).strip()
+            if text:
+                return text
     _log.warning(
-        "ask: empty content from model (source=%s, thread=%s); "
-        "likely recursion_limit hit or model refusal",
+        "ask: empty/non-AI final message (source=%s, thread=%s, type=%s); "
+        "likely recursion_limit hit, tool-loop overshoot, or model refusal",
         source,
         thread_id or f"default-{source}",
+        type(final).__name__,
     )
     return _EMPTY_CONTENT_REPLY
