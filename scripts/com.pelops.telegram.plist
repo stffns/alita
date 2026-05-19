@@ -20,7 +20,7 @@
     <key>PATH</key>
     <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>PYTHONPATH</key>
-    <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt</string>
+    <string>/Users/jaysonsteffens/Desktop/Personal/Projects/stilt:/Users/jaysonsteffens/Desktop/Personal/Projects/vstash-local</string>
   </dict>
 
   <key>RunAtLoad</key>
