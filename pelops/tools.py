@@ -9,6 +9,7 @@ Three groups:
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -468,20 +469,13 @@ def scheduler_status() -> str:
     propose cancelling stale ones. Pair with `followup(action='cancel')`
     or `watcher(action='cancel')` to act on what you find.
     """
-    import sqlite3
-    from datetime import UTC, datetime
-    from pathlib import Path
-
-    from pelops import watchers as _watchers
-    from pelops.config import Settings
-
     s = Settings.load()
     jobs_db = Path(s.vstash_db).parent / "jobs.db"
 
     lines: list[str] = []
     now = datetime.now(UTC)
 
-    active = _watchers.list_active()
+    active = watchers.list_active()
     lines.append(f"Active watchers: {len(active)}")
     for w in active[:10]:
         last = w.get("last_checked_at") or "never"
@@ -491,7 +485,9 @@ def scheduler_status() -> str:
         )
 
     if jobs_db.exists():
-        con = sqlite3.connect(str(jobs_db))
+        con = sqlite3.connect(str(jobs_db), isolation_level=None, timeout=10.0)
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=5000")
         try:
             rows = con.execute(
                 "SELECT id, run_at_utc, prompt FROM pelops_followups "
