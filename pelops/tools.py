@@ -457,6 +457,97 @@ def metrics_summary(hours: int = 24) -> str:
     return metrics.format_summary(metrics.summary(hours=hours))
 
 
+@tool
+def scheduler_status() -> str:
+    """Introspect your own scheduling state: active watchers, pending
+    followups, last heartbeat, and registered cron jobs.
+
+    Use this when {owner} asks "what are you tracking", "do you have
+    anything pending", "what's on your agenda", OR as part of an
+    agenda-hygiene review where you audit your own commitments and
+    propose cancelling stale ones. Pair with `followup(action='cancel')`
+    or `watcher(action='cancel')` to act on what you find.
+    """
+    import sqlite3
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from pelops import watchers as _watchers
+    from pelops.config import Settings
+
+    s = Settings.load()
+    jobs_db = Path(s.vstash_db).parent / "jobs.db"
+
+    lines: list[str] = []
+    now = datetime.now(UTC)
+
+    active = _watchers.list_active()
+    lines.append(f"Active watchers: {len(active)}")
+    for w in active[:10]:
+        last = w.get("last_checked_at") or "never"
+        lines.append(
+            f"  - {w['id']}  every={w['interval_seconds']}s  "
+            f"last_checked={last}  query={w['query'][:60]!r}"
+        )
+
+    if jobs_db.exists():
+        con = sqlite3.connect(str(jobs_db))
+        try:
+            rows = con.execute(
+                "SELECT id, run_at_utc, prompt FROM pelops_followups "
+                "WHERE status = 'pending' ORDER BY run_at_utc LIMIT 5"
+            ).fetchall()
+            total = con.execute(
+                "SELECT count(*) FROM pelops_followups WHERE status = 'pending'"
+            ).fetchone()[0]
+            lines.append("")
+            lines.append(f"Pending followups: {total} (showing soonest 5)")
+            for fid, run_at, prompt in rows:
+                preview = (prompt or "").strip().splitlines()[0][:80]
+                lines.append(f"  - {fid}  when={run_at}  prompt={preview!r}")
+
+            try:
+                cron_rows = con.execute(
+                    "SELECT id, next_run_time FROM apscheduler_jobs ORDER BY next_run_time"
+                ).fetchall()
+                if cron_rows:
+                    lines.append("")
+                    lines.append(f"Cron jobs: {len(cron_rows)}")
+                    for jid, next_run in cron_rows:
+                        if next_run:
+                            try:
+                                nr = datetime.fromtimestamp(float(next_run), UTC)
+                                delta = nr - now
+                                mins = int(delta.total_seconds() / 60)
+                                when = f"{nr.isoformat()} (in ~{mins}m)"
+                            except (ValueError, TypeError):
+                                when = str(next_run)
+                        else:
+                            when = "(no next_run_time)"
+                        lines.append(f"  - {jid}  next={when}")
+            except sqlite3.OperationalError:
+                pass
+        finally:
+            con.close()
+
+    try:
+        last_hb = vstash_recall.func(
+            query="action_heartbeat",
+            layer="agent-action",
+            top_k=1,
+            max_chars_per_result=200,
+        )
+        lines.append("")
+        lines.append("Last heartbeat (agent-action layer):")
+        for line in last_hb.splitlines()[:6]:
+            lines.append(f"  {line}")
+    except Exception as exc:
+        lines.append("")
+        lines.append(f"Last heartbeat: (lookup failed: {exc})")
+
+    return "\n".join(lines) if lines else "(no scheduling state)"
+
+
 # ----- Wiki tools -----------------------------------------------------------
 #
 # These are EXPOSED but NOT yet registered in CHAT_TOOLS. Wiring into the
@@ -1209,6 +1300,7 @@ CHAT_TOOLS = [
     followup,
     watcher,
     metrics_summary,
+    scheduler_status,
     *WIKI_TOOLS,
     *SKILL_TOOLS,
     *CODE_TOOLS,
