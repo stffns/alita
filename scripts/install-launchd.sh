@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Install the Pelops launchd agents so the Telegram bot and the
-# (optional) standalone scheduler run automatically at login and
-# restart on crash.
+# Install the Pelops launchd agent so the Telegram bot starts at login
+# and restarts on crash. The bot embeds the scheduler (ADR-0002), so
+# the standalone scheduler plist is intentionally NOT installed --
+# running both against the same persistent jobstore corrupts the
+# executor pool.
 #
 # Usage:
 #   bash scripts/install-launchd.sh           # install + load
@@ -17,7 +19,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAUNCH_DIR="$HOME/Library/LaunchAgents"
 AGENTS=(
     "com.pelops.telegram"
-    "com.pelops.scheduler"
 )
 
 mkdir -p "$LAUNCH_DIR"
@@ -58,17 +59,16 @@ for label in "${AGENTS[@]}"; do
         continue
     fi
 
-    # Rewrite hardcoded paths to point at THIS checkout.
+    # Rewrite hardcoded paths to point at THIS checkout AND its sibling
+    # vstash-local (which the bot needs on PYTHONPATH because the editable
+    # .pth file gets re-hidden by macOS inside .venv).
     python3 - "$src" "$dst" "$ROOT" <<'PY'
-import sys, re
+import os, re, sys
 src, dst, root = sys.argv[1:4]
+sibling = os.path.normpath(os.path.join(root, "..", "vstash-local"))
 text = open(src).read()
-# Replace the original hardcoded prefix with the current root.
-text = re.sub(
-    r"/Users/[^/]+/Desktop/Personal/Projects/stilt",
-    root,
-    text,
-)
+text = re.sub(r"/Users/[^/]+/Desktop/Personal/Projects/stilt", root, text)
+text = re.sub(r"/Users/[^/]+/Desktop/Personal/Projects/vstash-local", sibling, text)
 open(dst, "w").write(text)
 PY
 
