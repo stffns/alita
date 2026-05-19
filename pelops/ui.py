@@ -169,17 +169,18 @@ async def on_message(message: cl.Message) -> None:
     final_text = ""
 
     thread_id = cl.user_session.get("thread_id") or "chainlit-default"
-    # Match the `ask()` chat path's default in pelops.agent (50). LangGraph's
-    # built-in default of 25 is too tight for multi-tool chains like
-    # "write a snake game" or "create wiki page then adopt orphan" --
-    # those hit the cap mid-flight and surface a GraphRecursionError.
+    # Match the `ask()` chat path's default in pelops.agent. Bumped to
+    # 100 with the sub-agents (deep / vision / researcher): a single
+    # `task(...)` call now chains 20-30 nodes inside the parent graph,
+    # so a turn that touches two sub-agents needs more headroom than
+    # the old pre-sub-agent flow.
     async for event in agent.astream_events(
         {"messages": messages},
         version="v2",
         config={
             "callbacks": [MetricsCallback(source="chainlit")],
             "configurable": {"thread_id": thread_id},
-            "recursion_limit": 50,
+            "recursion_limit": 100,
         },
     ):
         # SummarizationMiddleware invokes the chat model with a

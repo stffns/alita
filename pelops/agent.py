@@ -179,7 +179,7 @@ def ask(
     restricted: bool = False,
     source: str = "chat",
     thread_id: str | None = None,
-    recursion_limit: int = 50,
+    recursion_limit: int = 100,
 ) -> str:
     """Synchronous helper for one-shot questions.
 
@@ -189,13 +189,14 @@ def ask(
     of the same kind share state -- normally desirable for cron jobs.
 
     `recursion_limit` caps the number of LangGraph node steps before the
-    graph stops. Default 50 (started at LangGraph's default of 25, was
-    bumped to 40 in PR #14, and to 50 here after observing that creating
-    a brand-new wiki page on an unknown topic chains research +
-    wiki_write + INBOUND adoption wiki_write -- 40 was still tight).
-    Heartbeat passes 50 explicitly at the call site, matching this
-    default; future autonomous flows with even longer chains can pass
-    higher.
+    graph stops. Default 100 (was 50 before sub-agents). The deep /
+    vision / researcher sub-agents added in PR #28 each chain inside
+    the parent graph -- one `task(...)` call can easily consume 20-30
+    nodes -- so a turn that uses two sub-agents needs more headroom
+    than the pre-sub-agent chat flow. Started at LangGraph's default
+    of 25, bumped to 40 in PR #14, to 50 in PR #15 (wiki-page-creator
+    chained research + wiki_write + adoption -- 40 was tight), and to
+    100 now (sub-agents).
 
     On every call we check `persona.md` for changes and rebuild the
     cached agent if the file was edited -- this is what makes wiki
