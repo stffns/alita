@@ -48,7 +48,7 @@ logs:  ## tail pelops.log
 	tail -F $(LOG_FILE)
 
 errlogs:  ## grep ERROR lines from pelops.log
-	@grep -E '"level": "ERROR"' $(LOG_FILE) | tail -20
+	@grep -sE '"level": "ERROR"' $(LOG_FILE) | tail -20
 
 # ---- dev ----
 
