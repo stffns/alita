@@ -30,9 +30,11 @@ async def on_chat_start() -> None:
     s = Settings.load()
     cl.user_session.set("agent", build_agent())
     cl.user_session.set("history", [])
-    # Each Chainlit session gets its own checkpointer thread so a refresh
-    # of the tab can continue the same conversation.
-    cl.user_session.set("thread_id", f"chainlit-{cl.context.session.id}")
+    # Stable per-owner thread so a page reload or new browser session
+    # continues the SAME LangGraph state (history, todos, etc). To start
+    # a fresh thread, send `/new` as a message -- on_message mints a new
+    # UUID and switches this session's thread_id.
+    cl.user_session.set("thread_id", f"chainlit-{s.owner}")
 
     # Inbox catch-up: show as a one-line notification with action buttons,
     # not as a chat message. Pelops's own welcome comes after.
@@ -160,6 +162,18 @@ def _to_lc(history: list[dict]):
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    if message.content.strip() == "/new":
+        import uuid
+
+        new_id = f"chainlit-new-{uuid.uuid4().hex[:8]}"
+        cl.user_session.set("thread_id", new_id)
+        cl.user_session.set("history", [])
+        await cl.Message(
+            author="Pelops",
+            content=f"Nuevo hilo arrancado ({new_id}). El anterior queda guardado.",
+        ).send()
+        return
+
     agent = cl.user_session.get("agent")
     history: list[dict] = cl.user_session.get("history", [])
 
