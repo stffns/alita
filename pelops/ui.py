@@ -15,7 +15,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio  # noqa: E402
+import json  # noqa: E402
+import uuid  # noqa: E402
 from datetime import UTC, datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 import chainlit as cl  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
@@ -24,6 +27,43 @@ from pelops.agent import build_agent  # noqa: E402
 from pelops.callbacks import MetricsCallback  # noqa: E402
 from pelops.config import Settings  # noqa: E402
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _active_thread_path() -> Path:
+    return PROJECT_ROOT / "data" / "chainlit_active_thread.json"
+
+
+def _read_active_thread(default: str) -> str:
+    """Return the currently active chainlit thread_id, or `default`.
+
+    The file is the cross-session record of which thread the user is
+    currently in. /new mints a new id and writes it here so the next
+    page reload (or new browser session) continues with the same
+    fresh thread instead of bouncing back to the default.
+    """
+    p = _active_thread_path()
+    if not p.exists():
+        return default
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        tid = data.get("thread_id")
+        return tid if isinstance(tid, str) and tid else default
+    except (OSError, ValueError):
+        return default
+
+
+def _write_active_thread(thread_id: str) -> None:
+    try:
+        p = _active_thread_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps({"thread_id": thread_id, "updated_at": datetime.now(UTC).isoformat()}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
@@ -31,11 +71,14 @@ async def on_chat_start() -> None:
     agent = build_agent()
     cl.user_session.set("agent", agent)
     cl.user_session.set("history", [])
-    # Stable per-owner thread so a page reload or new browser session
-    # continues the SAME LangGraph state (history, todos, etc). To start
-    # a fresh thread, send `/new` as a message -- on_message mints a new
-    # UUID and switches this session's thread_id.
-    thread_id = f"chainlit-{s.owner}"
+    # Resolve the active thread_id from the cross-session record on
+    # disk (`data/chainlit_active_thread.json`). Falls back to the
+    # stable `chainlit-<owner>` thread if the file is missing. The
+    # `/new` command writes a fresh UUID here so a page reload or a
+    # second browser session continues with the SAME fresh thread
+    # instead of bouncing back to the default.
+    default_thread = f"chainlit-{s.owner}"
+    thread_id = _read_active_thread(default_thread)
     cl.user_session.set("thread_id", thread_id)
 
     # Render the last few turns from the checkpointer so a page reload
@@ -191,14 +234,17 @@ def _to_lc(history: list[dict]):
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     if message.content.strip() == "/new":
-        import uuid
-
         new_id = f"chainlit-new-{uuid.uuid4().hex[:8]}"
         cl.user_session.set("thread_id", new_id)
         cl.user_session.set("history", [])
+        _write_active_thread(new_id)
         await cl.Message(
             author="Pelops",
-            content=f"Nuevo hilo arrancado ({new_id}). El anterior queda guardado.",
+            content=(
+                f"Nuevo hilo arrancado ({new_id}). El anterior queda guardado en el "
+                f"checkpointer. Recargar o abrir otra ventana continua en este hilo "
+                f"nuevo. Para volver al default, borra `data/chainlit_active_thread.json`."
+            ),
         ).send()
         return
 
