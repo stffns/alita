@@ -168,6 +168,33 @@ def write(slug: str, body: str, sources: list[str] | None = None) -> Page:
     return page
 
 
+def delete(slug: str, force: bool = False) -> dict:
+    """Delete a wiki page. Returns a status dict.
+
+    By default refuses to delete if other pages reference the slug via
+    `[[slug]]` -- that would leave dangling backlinks. Pass `force=True`
+    to delete anyway; the caller gets back the list of pages now holding
+    a dangling reference so they can clean up explicitly.
+
+    The vault is a git repo, so deletes are recoverable via `git restore`
+    or `git revert` on the resulting commit. No soft-delete here.
+
+    Returns:
+      {"status": "deleted", "dangling_in": [...]} on success
+      {"status": "not_found"} if the slug has no page
+      {"status": "has_backlinks", "backlinks": [...]} if blocked
+    """
+    _validate_slug(slug)
+    p = _path(slug)
+    if not p.exists():
+        return {"status": "not_found"}
+    inbound = backlinks(slug)
+    if inbound and not force:
+        return {"status": "has_backlinks", "backlinks": inbound}
+    p.unlink()
+    return {"status": "deleted", "dangling_in": inbound if force else []}
+
+
 def search(query: str, limit: int = 10) -> list[tuple[str, str]]:
     """Substring search across page bodies (case-insensitive).
 

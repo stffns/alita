@@ -741,6 +741,53 @@ def wiki_graph_stats() -> str:
     return "\n".join(lines)
 
 
+@tool
+def wiki_delete(slug: str, force: bool = False) -> str:
+    """Delete a wiki page. By default refuses if other pages link to it
+    (would create dangling backlinks).
+
+    Use when {owner} explicitly asks to remove a page, or when an
+    agenda-hygiene pass identifies a page that is no longer useful and
+    is not referenced anywhere.
+
+    Args:
+        slug: lowercase-kebab-case slug of the page to delete.
+        force: when True, delete even if other pages link to this slug.
+            The response lists which pages now have dangling references
+            so the caller can clean them up explicitly. The vault is a
+            git repo; a wrong delete is recoverable via `git restore`.
+
+    Returns:
+        - "Deleted <slug>." on a clean delete (no inbound links).
+        - "Deleted <slug>. Dangling references now in: a, b, c" when
+          force was used to bypass backlinks.
+        - "Refused: <slug> is referenced by: a, b, c. Pass force=True
+          to delete anyway or wiki_write those pages first to drop the
+          [[<slug>]] references." when backlinks blocked the delete.
+        - "Not found: <slug>." when the page does not exist.
+    """
+    from pelops import wiki
+
+    try:
+        result = wiki.delete(slug, force=force)
+    except (wiki.WikiError, OSError) as exc:
+        return f"Error: {exc}"
+    status = result["status"]
+    if status == "not_found":
+        return f"Not found: {slug}."
+    if status == "has_backlinks":
+        refs = ", ".join(result["backlinks"])
+        return (
+            f"Refused: {slug} is referenced by: {refs}. Pass force=True "
+            f"to delete anyway or wiki_write those pages first to drop "
+            f"the [[{slug}]] references."
+        )
+    dangling = result.get("dangling_in") or []
+    if dangling:
+        return f"Deleted {slug}. Dangling references now in: {', '.join(dangling)}"
+    return f"Deleted {slug}."
+
+
 # Wiki tools -- live in CHAT_TOOLS. The agent reads its own behavior
 # from heartbeat.md via wiki_read, and may write to wiki pages (including
 # heartbeat.md itself, co-editor model). Git in the vault is the safety
@@ -748,6 +795,7 @@ def wiki_graph_stats() -> str:
 WIKI_TOOLS = [
     wiki_read,
     wiki_write,
+    wiki_delete,
     wiki_list,
     wiki_search,
     wiki_backlinks,
