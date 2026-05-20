@@ -770,7 +770,7 @@ def wiki_delete(slug: str, force: bool = False) -> str:
 
     try:
         result = wiki.delete(slug, force=force)
-    except wiki.WikiError as exc:
+    except (wiki.WikiError, OSError) as exc:
         return f"Error: {exc}"
     status = result["status"]
     if status == "not_found":
