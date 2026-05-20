@@ -54,12 +54,15 @@ def _read_active_thread(default: str) -> str:
 
 
 def _write_active_thread(thread_id: str) -> None:
-    p = _active_thread_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
-        json.dumps({"thread_id": thread_id, "updated_at": datetime.now(UTC).isoformat()}),
-        encoding="utf-8",
-    )
+    try:
+        p = _active_thread_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps({"thread_id": thread_id, "updated_at": datetime.now(UTC).isoformat()}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 @cl.on_chat_start
