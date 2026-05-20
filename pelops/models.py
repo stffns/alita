@@ -47,6 +47,8 @@ def _flatten_content(content: Any) -> str:
             elif isinstance(block, str):
                 parts.append(block)
         return "".join(parts)
+    if content is None:
+        return ""
     return str(content)
 
 
