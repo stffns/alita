@@ -95,7 +95,16 @@ def build_agent(restricted: bool = False):
     """
     s = Settings.load()
     model = _build_model(s.chat_model)
-    backend = FilesystemBackend(root_dir=str(PROJECT_ROOT), virtual_mode=True)
+    # virtual_mode=False so the deepagents-native filesystem tools
+    # (read_file/write_file/edit_file/ls/glob/grep) operate on real disk
+    # under PROJECT_ROOT. This is what lets Alita modify her own code
+    # (pelops/*.py, scripts/, persona/heartbeat are still in the vault
+    # which lives outside PROJECT_ROOT and is unreachable from here).
+    # Blast radius is bounded by root_dir -- nothing outside the repo
+    # is touchable via these tools. The agent has NO git_push / restart
+    # tool, so a bad self-edit sits in the working tree until Jay
+    # reviews `git status` and decides whether to commit + restart.
+    backend = FilesystemBackend(root_dir=str(PROJECT_ROOT), virtual_mode=False)
     skills = _discover_skill_sources()
     tools = list(CHAT_TOOLS)
     if restricted:
