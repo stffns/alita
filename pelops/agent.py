@@ -95,7 +95,26 @@ def build_agent(restricted: bool = False):
     """
     s = Settings.load()
     model = _build_model(s.chat_model)
-    backend = FilesystemBackend(root_dir=str(PROJECT_ROOT), virtual_mode=True)
+    # virtual_mode=False so the deepagents-native filesystem tools
+    # (read_file/write_file/edit_file/ls/glob/grep) operate on real disk
+    # under PROJECT_ROOT. This enables self-modification: Alita can
+    # read and edit her own Python code in `pelops/*.py`, `scripts/`,
+    # `Makefile`, etc. Blast radius is bounded by root_dir -- the wiki
+    # vault (`~/Documents/pelops-wiki/`) and everything else outside
+    # PROJECT_ROOT remain unreachable through these tools.
+    #
+    # KNOWN SOFT-LIMIT (not enforced in code): there is no `git_push`
+    # or self-restart tool, BUT a bad self-edit to a module that the
+    # bot already imports is NOT auto-recovered. The bot is supervised
+    # by launchd with `KeepAlive` + `Crashed=true`; an agent-triggered
+    # crash (e.g. `code_execute` running `sys.exit(2)` after editing
+    # the loaded code) would respawn into the modified code,
+    # bypassing the intended "Jay reviews `git status` first" gate.
+    # The persona instructs Alita NOT to do this. The guarantee is
+    # trust-based, not enforced. A future PR could add a write-block
+    # list (refuse edits to `pelops/agent.py`, `pelops/persona.py`,
+    # etc) or strip the crash-trigger tools from the toolset.
+    backend = FilesystemBackend(root_dir=str(PROJECT_ROOT), virtual_mode=False)
     skills = _discover_skill_sources()
     tools = list(CHAT_TOOLS)
     if restricted:
