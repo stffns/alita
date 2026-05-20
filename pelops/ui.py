@@ -28,13 +28,41 @@ from pelops.config import Settings  # noqa: E402
 @cl.on_chat_start
 async def on_chat_start() -> None:
     s = Settings.load()
-    cl.user_session.set("agent", build_agent())
+    agent = build_agent()
+    cl.user_session.set("agent", agent)
     cl.user_session.set("history", [])
     # Stable per-owner thread so a page reload or new browser session
     # continues the SAME LangGraph state (history, todos, etc). To start
     # a fresh thread, send `/new` as a message -- on_message mints a new
     # UUID and switches this session's thread_id.
-    cl.user_session.set("thread_id", f"chainlit-{s.owner}")
+    thread_id = f"chainlit-{s.owner}"
+    cl.user_session.set("thread_id", thread_id)
+
+    # Render the last few turns from the checkpointer so a page reload
+    # shows "where we left off" instead of an empty chat. The backend
+    # already had this state (LangGraph + DualModeSqliteSaver), but
+    # Chainlit has no native UI persistence without a data layer.
+    # We render up to RESTORE_TURNS pairs and rebuild the in-memory
+    # history list so the next on_message has continuity too.
+    RESTORE_TURNS = 10
+    try:
+        state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        past_messages = (state.values or {}).get("messages", [])
+    except Exception:
+        past_messages = []
+    rebuilt: list[dict] = []
+    for m in past_messages[-(RESTORE_TURNS * 2) :]:
+        content = getattr(m, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if isinstance(m, HumanMessage):
+            await cl.Message(author="You", content=content).send()
+            rebuilt.append({"role": "user", "content": content})
+        elif isinstance(m, AIMessage):
+            await cl.Message(author="Pelops", content=content).send()
+            rebuilt.append({"role": "assistant", "content": content})
+    if rebuilt:
+        cl.user_session.set("history", rebuilt[-20:])
 
     # Inbox catch-up: show as a one-line notification with action buttons,
     # not as a chat message. Pelops's own welcome comes after.
