@@ -204,16 +204,26 @@ def job_poll_followups() -> None:
 def job_session_snapshot() -> None:
     """Compose a rolling 'where we left off' note from recent chat turns.
 
-    Cheap: only fires the agent if there's been any episodic turn in the
-    last 30 min. Otherwise no-op. Saves to layer='session-state' so future
-    sessions can pick up the thread.
+    Cheap: only fires the agent if a new episodic turn has been added
+    since the last snapshot was written. Saves to layer='session-state'
+    so future sessions can pick up the thread.
     """
-    from datetime import datetime, timedelta
-
     from pelops.memory import get_memory
 
+    latest = _latest_per_layer({"episodic": None, "session-state": "session_state_latest"})
+    last_episodic = latest["episodic"]
+    last_snapshot = latest["session-state"]
+    if last_episodic is None:
+        log.info("session-snapshot: no episodic turns in vstash, skipping")
+        return
+    if last_snapshot is not None and last_episodic <= last_snapshot:
+        log.info(
+            "session-snapshot: no new episodic since %s, skipping",
+            last_snapshot.isoformat(),
+        )
+        return
+
     mem = get_memory()
-    datetime.now(UTC) - timedelta(minutes=30)
     recent = mem.search(
         "chat turn",
         top_k=10,
