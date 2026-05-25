@@ -154,9 +154,9 @@ def job_poll_followups() -> None:
         attempt = row.get("attempt_count", 0) + 1
         log.info("followup firing: id=%s label=%s attempt=%d", job_id, label, attempt)
         try:
-            # restricted=True drops the scheduling tool so a follow-up cannot
-            # recursively spawn more follow-ups (Hermes-style runaway guard).
-            answer = ask(prompt, restricted=True)
+            # mode="restricted" drops the scheduling tool so a follow-up
+            # cannot recursively spawn more follow-ups (runaway guard).
+            answer = ask(prompt, mode="restricted")
             watcher_id = row.get("watcher_id")
             is_noop = answer.strip().upper() == "NOOP"
             if is_noop:
@@ -244,7 +244,7 @@ def job_session_snapshot() -> None:
         "snapshot text verbatim.\n\n"
         f"Recent transcript:\n{transcript}"
     )
-    answer = ask(prompt, restricted=True)
+    answer = ask(prompt, mode="restricted")
     log.info("session-snapshot composed:\n%s", answer[:300])
 
 
@@ -505,7 +505,7 @@ def job_heartbeat() -> None:
         # graph. Matches the `ask()` default since PR for #29.
         answer = ask(
             prompt,
-            restricted=True,
+            mode="heartbeat",
             source="heartbeat",
             thread_id=beat_thread,
             recursion_limit=100,
