@@ -189,15 +189,25 @@ def vstash_recall(
             chars and dominated heartbeat token cost. Pass a higher value
             (or None) for queries where the full note matters.
         exclude_title_prefix: skip results whose title starts with this
-            prefix. Used by the heartbeat to filter
+            prefix (or any of these prefixes if pipe-delimited).
+            Used by the heartbeat to filter
             `action_context-compression_*` notes out of `agent-action`
             recalls -- those are bulky and represent past compression
             events, not genuine new activity.
+            Supports pipe-delimited strings: `"a|b"` checks `<title>.startswith(("a", "b"))`.
     """
+    # Parse multi-prefix: split by "|" so heartbeat checks like
+    # "prefix1|prefix2" work as intended (str.startswith handles both str and tuple).
+    prefixes = None
+    if exclude_title_prefix:
+        parts = exclude_title_prefix.split("|")
+        # If any part is empty after splitting (edge case: "a|"), strip them.
+        parts = [p for p in parts if p]
+        prefixes = tuple(parts) if len(parts) > 1 else exclude_title_prefix
     # Over-fetch when a filter is in play so we can still return `top_k`
     # after dropping matches. Gemini caught this: the previous code
     # would return < top_k whenever the filter ate hits.
-    fetch_k = top_k * 3 if exclude_title_prefix else top_k
+    fetch_k = top_k * 3 if prefixes else top_k
     results = get_memory().search(query, top_k=fetch_k, layer=layer)
     if not results:
         return "(no relevant memories found)"
@@ -206,7 +216,7 @@ def vstash_recall(
         if len(lines) >= top_k:
             break
         title = getattr(r, "title", "") or ""
-        if exclude_title_prefix and title.startswith(exclude_title_prefix):
+        if prefixes and title.startswith(prefixes):
             continue
         score = getattr(r, "score", None)
         text = getattr(r, "text", None) or getattr(r, "content", "") or str(r)
@@ -491,13 +501,13 @@ def scheduler_status() -> str:
         try:
             rows = con.execute(
                 "SELECT id, run_at_utc, prompt FROM pelops_followups "
-                "WHERE status = 'pending' ORDER BY run_at_utc LIMIT 5"
+                "WHERE status = 'pending' ORDER BY run_at_utc LIMIT 20"
             ).fetchall()
             total = con.execute(
                 "SELECT count(*) FROM pelops_followups WHERE status = 'pending'"
             ).fetchone()[0]
             lines.append("")
-            lines.append(f"Pending followups: {total} (showing soonest 5)")
+            lines.append(f"Pending followups: {total} (showing soonest 20)")
             for fid, run_at, prompt in rows:
                 preview = (prompt or "").strip().splitlines()[0][:80]
                 lines.append(f"  - {fid}  when={run_at}  prompt={preview!r}")
@@ -1351,4 +1361,16 @@ CHAT_TOOLS = [
     *GITHUB_TOOLS,
     *SANDBOX_TOOLS,
     *HOST_FS_TOOLS,
+]
+
+# Minimal toolset for cron-driven heartbeats. Carries ~5k tokens of tool
+# definitions vs ~11k for CHAT_TOOLS -- the rest (github, sandbox, code
+# exec, host fs, skills, scheduling) are not used inside a heartbeat
+# check and only inflate every LLM call in the chain.
+HEARTBEAT_TOOLS = [
+    now,
+    vstash_recall,
+    vstash_remember,
+    research,
+    *WIKI_TOOLS,
 ]

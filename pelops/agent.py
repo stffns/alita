@@ -15,7 +15,7 @@ from pelops.middleware import PROSE_SUMMARY_PROMPT, LoggingSummarization
 from pelops.models import build_model
 from pelops.persona import system_prompt
 from pelops.subagents import SUBAGENTS
-from pelops.tools import CHAT_TOOLS
+from pelops.tools import CHAT_TOOLS, HEARTBEAT_TOOLS
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = PROJECT_ROOT / "pelops" / "skills"
@@ -82,16 +82,20 @@ def _build_checkpointer():
     return build_saver(db_path)
 
 
-@lru_cache(maxsize=2)
-def build_agent(restricted: bool = False):
+@lru_cache(maxsize=4)
+def build_agent(mode: str = "full"):
     """Construct the Pelops deep agent.
 
     Args:
-        restricted: When True, removes scheduling tools (`followup`) from
-            the toolset AND disables `interrupt_on`. Used when the agent
-            is invoked as the RESULT of a follow-up firing -- prevents
-            both runaway scheduling and useless approval prompts (there
-            is nobody around to approve in a cron-driven flow).
+        mode: Which toolset variant to build.
+            * "full"       -- CHAT_TOOLS, the default for user-facing chat.
+            * "restricted" -- CHAT_TOOLS minus `followup`. For cron-driven
+              invocations that must not recursively schedule more
+              follow-ups (e.g. the followup runner itself, session
+              snapshots).
+            * "heartbeat"  -- HEARTBEAT_TOOLS, the minimal subset used by
+              `job_heartbeat`. Halves the per-call prompt overhead vs.
+              the full toolset (~5k vs ~11k tokens of tool definitions).
     """
     s = Settings.load()
     model = _build_model(s.chat_model)
@@ -116,9 +120,12 @@ def build_agent(restricted: bool = False):
     # etc) or strip the crash-trigger tools from the toolset.
     backend = FilesystemBackend(root_dir=str(PROJECT_ROOT), virtual_mode=False)
     skills = _discover_skill_sources()
-    tools = list(CHAT_TOOLS)
-    if restricted:
-        tools = [t for t in tools if getattr(t, "name", "") != "followup"]
+    if mode == "heartbeat":
+        tools = list(HEARTBEAT_TOOLS)
+    elif mode == "restricted":
+        tools = [t for t in CHAT_TOOLS if getattr(t, "name", "") != "followup"]
+    else:
+        tools = list(CHAT_TOOLS)
     # LoggingSummarization closes Pelops's "invisible context compression"
     # gap: when the chat history grows past the trigger threshold, the
     # middleware summarizes older messages AND saves the summary to vstash.
@@ -195,7 +202,7 @@ _EMPTY_CONTENT_REPLY = (
 def ask(
     message: str,
     history: list[dict] | None = None,
-    restricted: bool = False,
+    mode: str = "full",
     source: str = "chat",
     thread_id: str | None = None,
     recursion_limit: int = 100,
@@ -232,7 +239,7 @@ def ask(
     from langchain_core.messages import AIMessage
 
     _maybe_invalidate_agent_cache()
-    agent = build_agent(restricted=restricted)
+    agent = build_agent(mode=mode)
     messages = list(history or [])
     messages.append({"role": "user", "content": message})
     result = agent.invoke(
